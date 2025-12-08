@@ -7,6 +7,7 @@ from dateutil.relativedelta import relativedelta
 import datetime
 from decimal import Decimal
 from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.contrib.auth.models import User
 from rest_framework.authtoken.models import Token
 from django.core.mail import send_mail
@@ -68,6 +69,25 @@ class HouseViewSet(viewsets.ModelViewSet):
 class HouseMemberViewSet(BaseHouseViewSet):
     queryset = HouseMember.objects.all()
     serializer_class = HouseMemberSerializer
+
+    def destroy(self, request, *args, **kwargs):
+        # 1. Quem está tentando deletar?
+        requester = request.user
+        
+        # 2. Verifica se o solicitante tem vínculo com a casa
+        if not hasattr(requester, 'house_member'):
+            return Response({'error': 'Você não é membro desta casa.'}, status=status.HTTP_403_FORBIDDEN)
+            
+        # 3. VERIFICAÇÃO DE SEGURANÇA: O solicitante é ADMIN?
+        if requester.house_member.role != 'ADMIN':
+            return Response({'error': 'Apenas administradores podem remover membros.'}, status=status.HTTP_403_FORBIDDEN)
+
+        # 4. Impede que o usuário delete a si mesmo por esta rota (opcional, mas bom para UX)
+        instance = self.get_object()
+        if instance.user == requester:
+             return Response({'error': 'Você não pode se remover/banir. Use a opção "Sair da Casa".'}, status=status.HTTP_400_BAD_REQUEST)
+
+        return super().destroy(request, *args, **kwargs)
 
 class CategoryViewSet(BaseHouseViewSet):
     queryset = Category.objects.all()
@@ -552,49 +572,24 @@ class InvitationViewSet(viewsets.ViewSet):
             return Response({'error': 'Erro interno ao processar o convite.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
 class RegisterView(APIView):
-    permission_classes = [permissions.AllowAny] 
+    permission_classes = [AllowAny] 
 
     def post(self, request):
         username = request.data.get('username')
         email = request.data.get('email')
         password = request.data.get('password')
-        invitation_token = request.data.get('invitation_token') # <--- NOVO
 
         if not username or not password or not email:
             return Response({'error': 'Preencha todos os campos.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Validações de unicidade (mantidas)
         if User.objects.filter(username=username).exists():
             return Response({'error': 'Nome de usuário já existe.'}, status=status.HTTP_400_BAD_REQUEST)
         if User.objects.filter(email=email).exists():
             return Response({'error': 'E-mail já cadastrado.'}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            if invitation_token:
-                # Tenta buscar o convite
-                invite = get_object_or_404(HouseInvitation, id=invitation_token, email=email, accepted=False)
-                
-                # 1. Cria o usuário, mas não salva ainda para evitar o signal
-                user = User(username=username, email=email)
-                user.set_password(password)
-                
-                # 2. Vincula à casa do convite ANTES de salvar o usuário
-                HouseMember.objects.create(
-                    user=user,
-                    house=invite.house,
-                    role='MEMBER'
-                )
-                
-                # 3. Agora salva o usuário. O signal vai rodar, mas o HouseMember já existe.
-                user.save()
-                
-                # 4. Invalida o convite
-                invite.delete()
-            else:
-                # Fluxo normal: cria o usuário, e o signal cuidará da casa padrão.
-                user = User.objects.create_user(username=username, email=email, password=password)
-                
-            # Gera o Token e retorna
+            # Criação simples. O Signal criará a casa padrão automaticamente.
+            user = User.objects.create_user(username=username, email=email, password=password)
             token, _ = Token.objects.get_or_create(user=user)
 
             return Response({
@@ -604,7 +599,104 @@ class RegisterView(APIView):
                 'email': user.email
             }, status=status.HTTP_201_CREATED)
             
-        except ObjectDoesNotExist:
-            return Response({'error': 'Convite inválido ou e-mail incorreto.'}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class InvitationViewSet(viewsets.ViewSet):
+    permission_classes = [IsAuthenticated]
+
+    # --- NOVO MÉTODO: SWAP DE CASA (TROCA) ---
+    @action(detail=False, methods=['post'], url_path='join')
+    def join_house(self, request):
+        token = request.data.get('token')
+        user = request.user
+
+        if not token:
+            return Response({'error': 'Token não fornecido.'}, status=400)
+
+        try:
+            invite = HouseInvitation.objects.get(id=token, accepted=False)
+            
+            # 1. Limpeza: Encontra e deleta a casa padrão criada pelo signal
+            # (Geralmente é a única casa onde ele é ADMIN e está sozinho)
+            try:
+                default_member = HouseMember.objects.get(user=user, role='ADMIN')
+                default_house = default_member.house
+                
+                # Só deleta se a casa tiver apenas 1 membro (o próprio usuário)
+                if HouseMember.objects.filter(house=default_house).count() == 1:
+                    default_member.delete()
+                    default_house.delete()
+                else:
+                    # Se ele já tem dados ou outros membros, apenas remove o vínculo
+                    default_member.delete()
+
+            except ObjectDoesNotExist:
+                pass # Se não tiver casa padrão, segue o jogo
+
+            # 2. Cria o vínculo correto
+            HouseMember.objects.create(
+                user=user,
+                house=invite.house,
+                role='MEMBER'
+            )
+
+            # 3. Finaliza convite
+            invite.accepted = True
+            invite.delete()
+
+            return Response({'message': f'Bem-vindo à casa {invite.house.name}!'}, status=200)
+
+        except HouseInvitation.DoesNotExist:
+            return Response({'error': 'Convite inválido ou expirado.'}, status=404)
+        except Exception as e:
+            return Response({'error': str(e)}, status=400)
+
+    # ... (Métodos list, create, destroy mantidos iguais) ...
+    def list(self, request):
+        user = request.user
+        if not hasattr(user, 'house_member'): return Response([])
+        house = user.house_member.house
+        invites = HouseInvitation.objects.filter(house=house, accepted=False).order_by('-created_at')
+        serializer = HouseInvitationSerializer(invites, many=True)
+        return Response(serializer.data)
+
+    def create(self, request):
+        email = request.data.get('email')
+        user = request.user
+        if not hasattr(user, 'house_member'): return Response({'error': 'Sem casa vinculada.'}, status=400)
+        house = user.house_member.house
+        
+        # Validar duplicidade
+        if HouseInvitation.objects.filter(house=house, email=email, accepted=False).exists():
+            return Response({'error': 'Convite já pendente.'}, status=400)
+        if HouseMember.objects.filter(house=house, user__email=email).exists():
+             return Response({'error': 'Usuário já na casa.'}, status=400)
+
+        invitation = HouseInvitation.objects.create(house=house, inviter=user, email=email)
+        # Atenção ao IP/Porta do Frontend aqui
+        invite_link = f"http://localhost:5173/accept-invite/{invitation.id}" 
+        
+        try:
+            send_mail(
+                f"Convite: {house.name}",
+                f"Entre na casa: {invite_link}",
+                settings.EMAIL_HOST_USER,
+                [email],
+                fail_silently=False,
+            )
+            return Response({'message': 'E-mail enviado!'})
+        except:
+            print(f"LINK CONVITE: {invite_link}")
+            return Response({'message': 'Convite criado (Link no terminal).'})
+
+    def destroy(self, request, pk=None):
+        user = request.user
+        house = user.house_member.house
+        try:
+            invite = HouseInvitation.objects.get(id=pk, house=house)
+            invite.delete()
+            return Response({'message': 'Cancelado.'})
+        except:
+            return Response({'error': 'Não encontrado.'}, status=404)

@@ -18,8 +18,7 @@ export function AuthProvider({ children }) {
             api.defaults.headers.Authorization = `Token ${storagedToken}`;
             setUser(JSON.parse(storagedUser));
         } catch (error) {
-            localStorage.clear();
-            setUser(null);
+            signOut();
         }
       }
       setLoading(false); 
@@ -27,38 +26,59 @@ export function AuthProvider({ children }) {
     loadStorageData();
   }, []);
 
+  // --- NOVA LÓGICA DE JOIN ---
+  async function checkPendingInvite() {
+      const token = localStorage.getItem('pending_invite_token');
+      if (token) {
+          try {
+              await api.post('/invitations/join/', { token });
+              toast.success("Você entrou na casa do convite!");
+          } catch (error) {
+              console.error("Erro no join:", error);
+              toast.error("Falha ao entrar na casa do convite.");
+          } finally {
+              localStorage.removeItem('pending_invite_token');
+          }
+      }
+  }
+
   async function signIn({ username, password }) {
     try {
       const response = await api.post('api-token-auth/', { username, password });
       const { token } = response.data;
+      
       handleLoginSuccess(token, username);
+      
+      // Checa convite APÓS login
+      await checkPendingInvite();
+
     } catch (error) {
       console.error(error);
-      toast.error("Erro ao fazer login. Verifique seus dados.");
+      toast.error("Erro ao fazer login.");
       throw error;
     }
   }
 
-  // --- NOVA FUNÇÃO DE REGISTRO ---
-  async function signUp({ username, email, password, invitation_token }) {
+  async function signUp({ username, email, password }) {
     try {
-        const response = await api.post('/register/', { username, email, password, invitation_token });
+        // Registro normal (Signal cria casa padrão)
+        const response = await api.post('/register/', { username, email, password });
         const { token } = response.data;
         
-        // Já loga o usuário automaticamente após criar a conta
         handleLoginSuccess(token, username);
+        
+        // Checa convite APÓS registro (Endpoint faz a troca de casas)
+        await checkPendingInvite();
+
         toast.success("Conta criada com sucesso!");
         
     } catch (error) {
         console.error(error);
-        // Pega a mensagem de erro específica do backend se existir
-        const msg = error.response?.data?.error || "Erro ao criar conta.";
-        toast.error(msg);
+        toast.error(error.response?.data?.error || "Erro ao criar conta.");
         throw error;
     }
   }
 
-  // Helper para evitar repetição de código
   function handleLoginSuccess(token, username) {
       localStorage.setItem('@MyHome:token', token);
       localStorage.setItem('@MyHome:user', JSON.stringify({ username }));
@@ -67,7 +87,7 @@ export function AuthProvider({ children }) {
   }
 
   function signOut() {
-    localStorage.clear();
+    localStorage.clear(); // Limpa tudo, inclusive tokens pendentes
     api.defaults.headers.Authorization = undefined;
     setUser(null);
   }

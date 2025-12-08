@@ -19,10 +19,13 @@ class HouseSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class HouseMemberSerializer(serializers.ModelSerializer):
-    user_name = serializers.CharField(source='user.username', read_only=True)
+    # Campos extras para facilitar o frontend
+    user_name = serializers.ReadOnlyField(source='user.username')
+    user_email = serializers.ReadOnlyField(source='user.email')
+
     class Meta:
         model = HouseMember
-        fields = '__all__'
+        fields = ['id', 'user', 'user_name', 'user_email', 'house', 'role']
 
 # --- FINANCEIRO ---
 

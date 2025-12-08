@@ -1,9 +1,9 @@
 import { useState, useContext, useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom'; // Adicionado useSearchParams
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { AuthContext } from '../context/AuthContext';
 import Input from '../components/Input';
 import logoImg from '../assets/logo.png'; 
-import { Lock, User, ArrowRight, Loader2, UserPlus, Mail, LogIn } from 'lucide-react'; 
+import { Lock, User, Loader2, UserPlus, Mail, LogIn } from 'lucide-react'; 
 
 export default function Login() {
     // Estados do Formulário e UI
@@ -17,14 +17,21 @@ export default function Login() {
     const { signIn, signUp } = useContext(AuthContext);
     const navigate = useNavigate();
     
-    // NOVO: Leitura do Token de Convite da URL
+    // Leitura do Token de Convite da URL (Apenas para UX)
     const [searchParams] = useSearchParams();
     const inviteToken = searchParams.get('invite');
 
-    // --- EFEITO: FORÇAR CADASTRO SE HOUVER CONVITE ---
+    // --- EFEITO: CONFIGURA AMBIENTE SE HOUVER CONVITE ---
     useEffect(() => {
         if (inviteToken) {
-            setIsLogin(false); // Força a visualização do Cadastro
+            // 1. Força a visualização do Cadastro
+            setIsLogin(false); 
+            
+            // 2. Segurança: Garante que o token esteja salvo para o AuthContext usar DEPOIS do login
+            // (Caso o usuário tenha vindo direto pela URL e não pelo AcceptInvite)
+            if (inviteToken !== 'true') {
+                localStorage.setItem('pending_invite_token', inviteToken);
+            }
         }
     }, [inviteToken]);
 
@@ -37,16 +44,18 @@ export default function Login() {
         setLoading(true);
 
         try {
+            // NOTA: Não enviamos mais o token aqui. 
+            // O AuthContext verifica o localStorage automaticamente após o sucesso.
+            
             if (isLogin) {
                 // FLUXO DE LOGIN
                 await signIn({ username, password });
             } else {
-                // FLUXO DE CADASTRO (ENVIANDO O TOKEN SE ELE EXISTIR)
+                // FLUXO DE CADASTRO PADRÃO
                 await signUp({ 
                     username, 
                     email, 
-                    password,
-                    invitation_token: inviteToken // Envia o token para o backend
+                    password
                 });
             }
             
@@ -67,7 +76,6 @@ export default function Login() {
 
     const title = isLogin ? 'Bem-vindo de volta' : 'Crie sua nova conta';
     const subtitle = isLogin ? 'Insira suas credenciais para acessar.' : (inviteToken ? 'Preencha os dados para aceitar o convite e se cadastrar.' : 'Comece a organizar suas finanças e estoque.');
-
 
     return (
         <div className="flex w-screen h-screen overflow-hidden bg-gray-50 dark:bg-[#0F172A]">
@@ -107,8 +115,9 @@ export default function Login() {
 
                     {/* Alerta de Convite */}
                     {inviteToken && (
-                        <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-xl text-yellow-700 dark:bg-yellow-900/20 dark:border-yellow-800 text-sm font-medium">
-                            Você está se cadastrando com um convite!
+                        <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-xl text-yellow-700 dark:bg-yellow-900/20 dark:border-yellow-800 text-sm font-medium text-center">
+                            👋 Você tem um convite pendente! <br/>
+                            Crie sua conta ou faça login para entrar na casa.
                         </div>
                     )}
                     
@@ -189,21 +198,14 @@ export default function Login() {
                     </form>
 
                     <div className="mt-8 text-center pb-8 md:pb-0">
-                        {/* O botão de toggle só aparece se não estiver em modo convite */}
-                        {!inviteToken && (
-                            <p className="text-sm text-gray-500 dark:text-gray-400">
-                                {isLogin ? 'Ainda não possui uma conta?' : 'Já tem uma conta?'}
-                                {' '}
-                                <button onClick={toggleView} className="text-teal-600 dark:text-teal-400 font-semibold hover:underline transition-colors">
-                                    {isLogin ? 'Criar nova conta' : 'Fazer login'}
-                                </button>
-                            </p>
-                        )}
-                        {inviteToken && isLogin && (
-                             <p className="text-sm text-gray-500 dark:text-gray-400">
-                                Faça o login para aceitar o convite.
-                            </p>
-                        )}
+                        {/* O botão de toggle só aparece se não estiver em modo convite, ou se o usuário quiser explicitamente trocar */}
+                        <p className="text-sm text-gray-500 dark:text-gray-400">
+                            {isLogin ? 'Ainda não possui uma conta?' : 'Já tem uma conta?'}
+                            {' '}
+                            <button onClick={toggleView} className="text-teal-600 dark:text-teal-400 font-semibold hover:underline transition-colors">
+                                {isLogin ? 'Criar nova conta' : 'Fazer login'}
+                            </button>
+                        </p>
                     </div>
                 </div>
 

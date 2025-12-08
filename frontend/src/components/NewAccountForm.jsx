@@ -1,56 +1,99 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import api from '../services/api';
 import toast from 'react-hot-toast';
 import MoneyInput from './MoneyInput';
-import Input from './Input';
-import { CreditCard, ArrowLeft, Trash2 } from 'lucide-react';
+import { Wallet, Save, Trash2, X, Users, Lock } from 'lucide-react';
+import { useTheme } from '../context/ThemeContext';
 
-// Aceitamos a prop 'initialData' para preencher o form se for edição
-export default function AccountForm({ onSuccess, onBack, initialData = null }) {
-  const [name, setName] = useState('');
-  const [balance, setBalance] = useState('');
-  const [isShared, setIsShared] = useState(true);
+export default function NewAccountForm({ onSuccess, onBack, initialData = null }) {
+  const { theme } = useTheme();
+  
+  const [name, setName] = useState(initialData?.name || '');
+  const [balance, setBalance] = useState(initialData?.balance || 0);
+  const [isShared, setIsShared] = useState(initialData?.is_shared || false);
   const [loading, setLoading] = useState(false);
 
-  // Se houver dados iniciais (Modo Edição), preenchemos os estados
-  useEffect(() => {
-    if (initialData) {
-      setName(initialData.name);
-      setBalance(initialData.balance); // MoneyInput aceita número float ou string
-      setIsShared(initialData.is_shared);
+  // --- LÓGICA DE EXCLUSÃO (TOAST) ---
+
+  async function executeDelete(toastId) {
+    toast.dismiss(toastId);
+    setLoading(true);
+    const loadingToast = toast.loading("Excluindo conta...");
+
+    try {
+      await api.delete(`/accounts/${initialData.id}/`);
+      toast.success("Conta excluída com sucesso!", { id: loadingToast });
+      if (onSuccess) onSuccess();
+    } catch (error) {
+      console.error(error);
+      toast.error("Não foi possível excluir a conta. Verifique se há transações vinculadas.", { id: loadingToast });
+      setLoading(false);
     }
-  }, [initialData]);
+  }
+
+  function confirmDelete() {
+    toast((t) => (
+      <div className="flex flex-col gap-3 min-w-[260px] p-1">
+        <div className="flex items-start gap-3">
+            <div className="bg-rose-100 p-2 rounded-full text-rose-500">
+                <Trash2 size={20} />
+            </div>
+            <div>
+                <p className="font-bold text-gray-800 dark:text-gray-100 text-sm">Excluir Conta?</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    Isso pode afetar o histórico financeiro vinculado.
+                </p>
+            </div>
+        </div>
+        
+        <div className="flex justify-end gap-2 pt-2 border-t border-gray-100 dark:border-slate-700 mt-1">
+          <button 
+            onClick={() => toast.dismiss(t.id)}
+            className="px-3 py-1.5 text-xs font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-lg transition"
+          >
+            Cancelar
+          </button>
+          <button 
+            onClick={() => executeDelete(t.id)}
+            className="px-3 py-1.5 text-xs font-bold text-white bg-rose-500 hover:bg-rose-600 rounded-lg shadow-sm transition"
+          >
+            Sim, excluir
+          </button>
+        </div>
+      </div>
+    ), { 
+        duration: Infinity, 
+        position: 'top-center',
+        style: {
+            background: theme === 'dark' ? '#1E293B' : '#fff',
+            color: theme === 'dark' ? '#fff' : '#333',
+        }
+    });
+  }
+
+  // --- LÓGICA DE SALVAR ---
 
   async function handleSubmit(e) {
     e.preventDefault();
-    setLoading(true);
+    if (!name) return toast.error("O nome da conta é obrigatório.");
 
+    setLoading(true);
     try {
-      // Converte vírgula para ponto se for string, ou mantém se já for número
-      const finalBalance = typeof balance === 'string' 
-        ? parseFloat(balance.replace(',', '.')) 
-        : balance;
+      const payload = {
+        name,
+        balance: parseFloat(balance), // Garante que é número
+        is_shared: isShared
+      };
 
       if (initialData) {
-        // --- MODO EDIÇÃO (PUT) ---
-        await api.put(`/accounts/${initialData.id}/`, {
-          name,
-          balance: finalBalance || 0,
-          is_shared: isShared
-        });
+        await api.patch(`/accounts/${initialData.id}/`, payload);
         toast.success("Conta atualizada!");
       } else {
-        // --- MODO CRIAÇÃO (POST) ---
-        await api.post('/accounts/', {
-          name,
-          balance: finalBalance || 0,
-          is_shared: isShared
-        });
+        await api.post('/accounts/', payload);
         toast.success("Conta criada!");
       }
       
-      onSuccess();
-
+      if (onSuccess) onSuccess();
     } catch (error) {
       console.error(error);
       toast.error("Erro ao salvar conta.");
@@ -59,95 +102,106 @@ export default function AccountForm({ onSuccess, onBack, initialData = null }) {
     }
   }
 
-  async function handleDelete() {
-    if (confirm("Tem certeza que deseja excluir esta conta? O histórico será perdido.")) {
-        try {
-            setLoading(true);
-            await api.delete(`/accounts/${initialData.id}/`);
-            toast.success("Conta excluída.");
-            onSuccess();
-        } catch (error) {
-            toast.error("Erro ao excluir.");
-            setLoading(false);
-        }
-    }
-  }
-
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
+    <form onSubmit={handleSubmit} className="space-y-5">
       
-      <div className="flex justify-between items-center mb-2">
+      {/* Cabeçalho Visual */}
+      <div className="flex items-center gap-3 p-4 bg-teal-50 dark:bg-teal-900/20 rounded-xl border border-teal-100 dark:border-teal-900/30">
+        <div className="p-3 bg-teal-100 dark:bg-teal-800 rounded-full text-teal-600 dark:text-teal-300">
+            <Wallet size={24} />
+        </div>
+        <div>
+            <h3 className="font-bold text-teal-900 dark:text-teal-100">
+                {initialData ? 'Editar Conta' : 'Nova Conta'}
+            </h3>
+            <p className="text-xs text-teal-600 dark:text-teal-400">
+                Gerencie seus saldos bancários ou carteiras.
+            </p>
+        </div>
+      </div>
+
+      {/* Campos */}
+      <div className="space-y-4">
+        <div>
+            <label className="block text-xs font-bold text-gray-500 uppercase mb-1 ml-1">Nome da Conta</label>
+            <input 
+                type="text" 
+                placeholder="Ex: Nubank, Carteira, Cofre..." 
+                className="w-full p-3 rounded-xl bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 outline-none focus:ring-2 focus:ring-teal-500 transition-all font-medium"
+                value={name}
+                onChange={e => setName(e.target.value)}
+                autoFocus
+            />
+        </div>
+
+        <div>
+            <label className="block text-xs font-bold text-gray-500 uppercase mb-1 ml-1">Saldo Atual</label>
+            <MoneyInput 
+                value={balance} 
+                onValueChange={setBalance} 
+                placeholder="0,00"
+            />
+        </div>
+
+        {/* Toggle Compartilhado */}
+        <div 
+            onClick={() => setIsShared(!isShared)}
+            className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-all
+            ${isShared 
+                ? 'bg-blue-50 border-blue-200 dark:bg-blue-900/20 dark:border-blue-800' 
+                : 'bg-gray-50 border-gray-200 dark:bg-slate-900 dark:border-slate-700'}`}
+        >
+            <div className="flex items-center gap-3">
+                <div className={`p-2 rounded-full ${isShared ? 'bg-blue-100 text-blue-600' : 'bg-gray-200 text-gray-500 dark:bg-slate-800'}`}>
+                    {isShared ? <Users size={18}/> : <Lock size={18}/>}
+                </div>
+                <div>
+                    <p className={`text-sm font-bold ${isShared ? 'text-blue-700 dark:text-blue-300' : 'text-gray-600 dark:text-gray-400'}`}>
+                        {isShared ? 'Conta Familiar' : 'Conta Privada'}
+                    </p>
+                    <p className="text-[10px] text-gray-500">
+                        {isShared ? 'Visível para todos da casa' : 'Visível apenas para você'}
+                    </p>
+                </div>
+            </div>
+            <div className={`w-10 h-6 rounded-full p-1 transition-colors ${isShared ? 'bg-blue-500' : 'bg-gray-300 dark:bg-slate-600'}`}>
+                <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${isShared ? 'translate-x-4' : ''}`} />
+            </div>
+        </div>
+      </div>
+
+      {/* Botões de Ação */}
+      <div className="flex gap-3 pt-2">
         {onBack && (
             <button 
                 type="button" 
                 onClick={onBack}
-                className="flex items-center text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition"
+                className="p-3 rounded-xl bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-slate-700 transition"
             >
-                <ArrowLeft size={16} className="mr-1" /> Voltar
+                <X size={20} />
             </button>
         )}
-        
+
         {/* Botão de Excluir (Só aparece na edição) */}
         {initialData && (
             <button 
-                type="button"
-                onClick={handleDelete}
-                className="text-red-500 hover:text-red-600 p-1 rounded transition"
+                type="button" 
+                onClick={confirmDelete}
+                className="p-3 rounded-xl bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 hover:bg-rose-200 dark:hover:bg-rose-900/50 transition"
                 title="Excluir Conta"
             >
-                <Trash2 size={18} />
+                <Trash2 size={20} />
             </button>
         )}
-      </div>
 
-      <div>
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Nome da Conta</label>
-        <Input 
-          type="text" 
-          required
-          placeholder="Ex: Nubank, Carteira..."
-          value={name}
-          onChange={e => setName(e.target.value)}
-          icon={CreditCard}
-        />
-      </div>
-
-      <div>
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Saldo Atual</label>
-        <MoneyInput 
-            value={balance}
-            onValueChange={(val) => setBalance(val)}
-        />
-      </div>
-
-      <div className="flex items-center justify-between p-3 bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-700">
-        <div className="flex flex-col">
-            <span className="font-medium text-gray-700 dark:text-gray-200">Compartilhar?</span>
-            <span className="text-xs text-gray-500 dark:text-gray-400">Visível para toda a casa</span>
-        </div>
-        
-        <button
-            type="button"
-            onClick={() => setIsShared(!isShared)}
-            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                isShared ? 'bg-teal-500' : 'bg-gray-300 dark:bg-slate-600'
-            }`}
+        <button 
+            type="submit" 
+            disabled={loading}
+            className="flex-1 flex items-center justify-center gap-2 bg-teal-600 hover:bg-teal-500 text-white font-bold py-3 rounded-xl shadow-lg shadow-teal-200 dark:shadow-none transition-all active:scale-95 disabled:opacity-70"
         >
-            <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                    isShared ? 'translate-x-6' : 'translate-x-1'
-                }`}
-            />
+            {loading ? 'Salvando...' : <><Save size={20} /> Salvar Conta</>}
         </button>
       </div>
-
-      <button 
-        type="submit" 
-        disabled={loading}
-        className="w-full bg-teal-600 text-white font-bold py-3 rounded-xl hover:bg-teal-500 active:scale-95 transition disabled:opacity-50"
-      >
-        {loading ? 'Salvando...' : (initialData ? 'Atualizar Conta' : 'Salvar Conta')}
-      </button>
 
     </form>
   );

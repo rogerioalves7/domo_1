@@ -8,7 +8,7 @@ import Modal from '../components/Modal';
 import CategoryManager from '../components/CategoryManager';
 import { 
   Settings as SettingsIcon, Users, Moon, Sun, LogOut, Trash2, 
-  Shield, Tag, User, Mail, Send, Clock, XCircle
+  Shield, Tag, User, Mail, Send, Clock, XCircle, Crown
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -16,25 +16,25 @@ export default function Settings() {
   const { signOut, user } = useContext(AuthContext);
   const { theme, toggleTheme } = useTheme();
   
-  // --- ESTADOS ---
+  // --- ESTADOS DE DADOS ---
   const [members, setMembers] = useState([]);
-  const [invitations, setInvitations] = useState([]); // Lista de convites pendentes
+  const [invitations, setInvitations] = useState([]);
   const [houseInfo, setHouseInfo] = useState(null);
   const [loading, setLoading] = useState(true);
   
+  // --- ESTADOS DE PERMISSÃO E UI ---
+  const [amIAdmin, setAmIAdmin] = useState(false); // <--- O Guardião da UI
   const [inviteEmail, setInviteEmail] = useState('');
   const [sendingInvite, setSendingInvite] = useState(false);
-  
-  const [isModalOpen, setIsModalOpen] = useState(false); // Modal de Categorias
+  const [isModalOpen, setIsModalOpen] = useState(false);
 
-  // --- CARREGAMENTO DE DADOS ---
+  // --- CARREGAMENTO INICIAL ---
   useEffect(() => {
     loadSettingsData();
   }, []);
 
   async function loadSettingsData() {
     try {
-      // Carrega tudo em paralelo: Casa, Membros e Convites Pendentes
       const [houseRes, membersRes, invitesRes] = await Promise.all([
         api.get('/houses/'),
         api.get('/members/'),
@@ -43,7 +43,18 @@ export default function Settings() {
 
       if (houseRes.data.length > 0) setHouseInfo(houseRes.data[0]);
       setMembers(membersRes.data);
-      setInvitations(invitesRes.data); // Atualiza lista de pendentes
+      setInvitations(invitesRes.data);
+
+      // --- LÓGICA DE SEGURANÇA NO FRONTEND ---
+      // Descobre se o usuário logado é ADMIN nesta casa
+      if (user && user.username) {
+          const myRecord = membersRes.data.find(m => m.user_name === user.username);
+          const isAdmin = myRecord?.role === 'ADMIN';
+          setAmIAdmin(isAdmin);
+          
+          // Debug (opcional, remova em produção)
+          console.log(`Usuário: ${user.username} | Role: ${myRecord?.role} | Acesso Admin: ${isAdmin}`);
+      }
 
     } catch (error) {
       console.error(error);
@@ -53,21 +64,55 @@ export default function Settings() {
     }
   }
 
-  // --- AÇÕES DE MEMBROS ---
+  // --- AÇÕES ---
 
-  async function removeMember(memberId) {
-    if (!confirm("Tem a certeza que deseja remover este membro da casa?")) return;
+  // 1. Função que executa a exclusão (Chamada pelo botão do Toast)
+  async function executeMemberRemoval(memberId, toastId) {
+    toast.dismiss(toastId); // Fecha o toast de confirmação
+    
+    const loadingToast = toast.loading("Removendo membro...");
 
     try {
       await api.delete(`/members/${memberId}/`);
-      toast.success("Membro removido.");
+      toast.success("Membro removido com sucesso!", { id: loadingToast });
       loadSettingsData();
     } catch (error) {
-      toast.error("Erro ao remover membro (verifique permissões).");
+      toast.error(error.response?.data?.error || "Erro ao remover membro.", { id: loadingToast });
     }
   }
 
-  // --- AÇÕES DE CONVITE ---
+  // 2. Função que abre a confirmação (Chamada pelo botão da Lixeira)
+  function removeMember(memberId) {
+    toast((t) => (
+      <div className="flex flex-col gap-3 min-w-[250px]">
+        <div className="flex items-center gap-2">
+            <span className="text-xl">⚠️</span>
+            <div>
+                <p className="font-bold text-gray-800 dark:text-gray-100 text-sm">Remover membro?</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400">Essa ação não pode ser desfeita.</p>
+            </div>
+        </div>
+        
+        <div className="flex justify-end gap-2 pt-1">
+          <button 
+            onClick={() => toast.dismiss(t.id)}
+            className="px-3 py-1.5 text-xs font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-lg transition"
+          >
+            Cancelar
+          </button>
+          <button 
+            onClick={() => executeMemberRemoval(memberId, t.id)}
+            className="px-3 py-1.5 text-xs font-bold text-white bg-rose-500 hover:bg-rose-600 rounded-lg shadow-sm transition"
+          >
+            Confirmar
+          </button>
+        </div>
+      </div>
+    ), { 
+        duration: Infinity, // Não fecha sozinho, espera ação
+        position: 'top-center'
+    });
+  }
 
   async function sendInvite() {
     if (!inviteEmail) return;
@@ -77,7 +122,7 @@ export default function Settings() {
         await api.post('/invitations/', { email: inviteEmail });
         toast.success("Convite enviado com sucesso!");
         setInviteEmail('');
-        loadSettingsData(); // Recarrega para mostrar na lista de pendentes
+        loadSettingsData(); 
     } catch (error) {
         console.error(error);
         toast.error(error.response?.data?.error || "Erro ao enviar convite.");
@@ -87,31 +132,15 @@ export default function Settings() {
   }
 
   async function cancelInvite(id) {
-    // Substitui o confirm() padrão por um toast interativo
-    toast((t) => (
-      <div className="flex flex-col gap-3 p-2">
-        <p className="font-bold text-center">Deseja realmente cancelar este convite?</p>
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            onClick={() => toast.dismiss(t.id)}
-            className="px-4 py-2 rounded-lg bg-gray-100 dark:bg-slate-700 text-sm font-bold"
-          >
-            Não
-          </button>
-          <button
-            onClick={async () => {
-              toast.dismiss(t.id);
-              await api.delete(`/invitations/${id}/`);
-              toast.success("Convite cancelado.");
-              loadSettingsData();
-            }}
-            className="px-4 py-2 rounded-lg bg-rose-600 text-white text-sm font-bold"
-          >
-            Sim, cancelar
-          </button>
-        </div>
-      </div>
-    ), { duration: 6000 }); // Duração maior para dar tempo de responder
+    if (!confirm("Deseja cancelar este convite?")) return;
+
+    try {
+        await api.delete(`/invitations/${id}/`);
+        toast.success("Convite cancelado.");
+        loadSettingsData();
+    } catch (error) {
+        toast.error("Erro ao cancelar convite.");
+    }
   }
 
   // --- RENDERIZAÇÃO ---
@@ -141,7 +170,10 @@ export default function Settings() {
                             {user?.username?.charAt(0).toUpperCase()}
                         </div>
                         <div>
-                            <h2 className="text-xl font-bold text-gray-800 dark:text-white">{user?.username}</h2>
+                            <h2 className="text-xl font-bold text-gray-800 dark:text-white flex items-center gap-2">
+                                {user?.username}
+                                {amIAdmin && <Crown size={16} className="text-yellow-500" title="Administrador"/>}
+                            </h2>
                             <p className="text-sm text-gray-500 dark:text-gray-400">
                                 {houseInfo ? `Casa: ${houseInfo.name}` : 'Membro da Casa'}
                             </p>
@@ -167,13 +199,13 @@ export default function Settings() {
                     </div>
                 </div>
 
-                {/* 2. MEMBROS E CONVITES */}
+                {/* 2. MEMBROS DA CASA */}
                 <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 border border-gray-100 dark:border-slate-700 shadow-sm">
                     <h3 className="text-lg font-bold text-gray-800 dark:text-white flex items-center gap-2 mb-4">
                         <Users className="text-blue-500" size={20} /> Membros da Casa
                     </h3>
 
-                    {/* Lista de Membros Ativos */}
+                    {/* Lista de Membros */}
                     <div className="space-y-3">
                         {loading ? <p className="text-gray-400 text-sm">Carregando...</p> : members.map(member => (
                             <div key={member.id} className="flex justify-between items-center p-3 bg-gray-50 dark:bg-slate-900/50 rounded-xl border border-gray-100 dark:border-slate-700/50">
@@ -186,15 +218,20 @@ export default function Settings() {
                                             {member.user_name || "Utilizador"} 
                                             {member.user_name === user.username && " (Você)"}
                                         </p>
-                                        <p className="text-xs text-gray-400">{member.role === 'ADMIN' ? 'Administrador' : 'Membro'}</p>
+                                        <div className="flex items-center gap-1">
+                                            <p className="text-xs text-gray-400">{member.role === 'ADMIN' ? 'Administrador' : 'Membro'}</p>
+                                            {member.role === 'ADMIN' && <Crown size={12} className="text-yellow-500"/>}
+                                        </div>
                                     </div>
                                 </div>
                                 
-                                {member.user_name !== user.username && (
+                                {/* LÓGICA DE VISIBILIDADE DO BOTÃO DE REMOVER */}
+                                {/* Só aparece se: Eu sou Admin E o alvo não sou eu mesmo */}
+                                {amIAdmin && member.user_name !== user.username && (
                                     <button 
                                         onClick={() => removeMember(member.id)} 
                                         className="p-2 text-gray-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-lg transition"
-                                        title="Remover da casa"
+                                        title="Remover membro"
                                     >
                                         <Trash2 size={18} />
                                     </button>
@@ -203,56 +240,68 @@ export default function Settings() {
                         ))}
                     </div>
                     
-                    {/* Área de Envio de Convite */}
-                    <div className="mt-6 pt-4 border-t border-gray-100 dark:border-slate-700">
-                        <label className="block text-xs font-bold text-gray-500 uppercase mb-2 flex items-center gap-1">
-                            <Mail size={12} /> Convidar novo membro
-                        </label>
-                        <div className="flex gap-2">
-                            <input 
-                                type="email" 
-                                placeholder="digite.o@email.com"
-                                className="flex-1 p-2.5 rounded-xl bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 outline-none focus:ring-2 focus:ring-teal-500 text-sm transition-all"
-                                value={inviteEmail}
-                                onChange={e => setInviteEmail(e.target.value)}
-                            />
-                            <button 
-                                onClick={sendInvite}
-                                disabled={!inviteEmail || sendingInvite}
-                                className="px-4 py-2 bg-teal-600 hover:bg-teal-500 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-bold rounded-xl text-sm transition flex items-center gap-2"
-                            >
-                                <Send size={16} /> 
-                                <span className="hidden md:inline">{sendingInvite ? 'Enviando...' : 'Enviar'}</span>
-                            </button>
-                        </div>
-                    </div>
-
-                    {/* LISTA DE CONVITES PENDENTES */}
-                    {invitations.length > 0 && (
-                        <div className="mt-4 space-y-2 animate-fade-in-down">
-                            <h4 className="text-[10px] font-bold text-yellow-600 dark:text-yellow-500 uppercase mb-2 flex items-center gap-1">
-                                <Clock size={12} /> Aguardando Aceite ({invitations.length})
-                            </h4>
-                            {invitations.map(invite => (
-                                <div key={invite.id} className="flex justify-between items-center p-2.5 bg-yellow-50 dark:bg-yellow-900/10 rounded-xl border border-yellow-100 dark:border-yellow-900/20">
-                                    <div className="flex items-center gap-2 overflow-hidden">
-                                        <div className="p-1.5 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-600 dark:text-yellow-500 rounded-full">
-                                            <Mail size={14} />
-                                        </div>
-                                        <div className="min-w-0">
-                                            <p className="text-sm font-bold text-gray-700 dark:text-gray-200 truncate">{invite.email}</p>
-                                            <p className="text-[10px] text-gray-400">Enviado em {new Date(invite.created_at).toLocaleDateString('pt-BR')}</p>
-                                        </div>
-                                    </div>
+                    {/* ÁREA DE GESTÃO DE CONVITES (SÓ PARA ADMINS) */}
+                    {amIAdmin ? (
+                        <>
+                            {/* Input de Envio */}
+                            <div className="mt-6 pt-4 border-t border-gray-100 dark:border-slate-700">
+                                <label className="block text-xs font-bold text-gray-500 uppercase mb-2 flex items-center gap-1">
+                                    <Mail size={12} /> Convidar novo membro
+                                </label>
+                                <div className="flex gap-2">
+                                    <input 
+                                        type="email" 
+                                        placeholder="digite.o@email.com"
+                                        className="flex-1 p-2.5 rounded-xl bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 outline-none focus:ring-2 focus:ring-teal-500 text-sm transition-all"
+                                        value={inviteEmail}
+                                        onChange={e => setInviteEmail(e.target.value)}
+                                    />
                                     <button 
-                                        onClick={() => cancelInvite(invite.id)}
-                                        className="p-2 text-gray-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-lg transition"
-                                        title="Cancelar convite"
+                                        onClick={sendInvite}
+                                        disabled={!inviteEmail || sendingInvite}
+                                        className="px-4 py-2 bg-teal-600 hover:bg-teal-500 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-bold rounded-xl text-sm transition flex items-center gap-2"
                                     >
-                                        <XCircle size={18} />
+                                        <Send size={16} /> 
+                                        <span className="hidden md:inline">{sendingInvite ? 'Enviando...' : 'Enviar'}</span>
                                     </button>
                                 </div>
-                            ))}
+                            </div>
+
+                            {/* Lista de Pendentes */}
+                            {invitations.length > 0 && (
+                                <div className="mt-4 space-y-2 animate-fade-in-down">
+                                    <h4 className="text-[10px] font-bold text-yellow-600 dark:text-yellow-500 uppercase mb-2 flex items-center gap-1">
+                                        <Clock size={12} /> Aguardando Aceite ({invitations.length})
+                                    </h4>
+                                    {invitations.map(invite => (
+                                        <div key={invite.id} className="flex justify-between items-center p-2.5 bg-yellow-50 dark:bg-yellow-900/10 rounded-xl border border-yellow-100 dark:border-yellow-900/20">
+                                            <div className="flex items-center gap-2 overflow-hidden">
+                                                <div className="p-1.5 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-600 dark:text-yellow-500 rounded-full">
+                                                    <Mail size={14} />
+                                                </div>
+                                                <div className="min-w-0">
+                                                    <p className="text-sm font-bold text-gray-700 dark:text-gray-200 truncate">{invite.email}</p>
+                                                    <p className="text-[10px] text-gray-400">Enviado em {new Date(invite.created_at).toLocaleDateString('pt-BR')}</p>
+                                                </div>
+                                            </div>
+                                            <button 
+                                                onClick={() => cancelInvite(invite.id)}
+                                                className="p-2 text-gray-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-lg transition"
+                                                title="Cancelar convite"
+                                            >
+                                                <XCircle size={18} />
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </>
+                    ) : (
+                        // MENSAGEM PARA NÃO-ADMINS
+                        <div className="mt-6 pt-4 border-t border-gray-100 dark:border-slate-700 text-center">
+                            <p className="text-xs text-gray-400">
+                                Apenas administradores podem convidar ou remover membros.
+                            </p>
                         </div>
                     )}
                 </div>
