@@ -168,14 +168,18 @@ class ShoppingList(models.Model):
     
 class TransactionItem(models.Model):
     """Itens detalhados de uma transação (compra de mercado)"""
+    # Mantemos related_name='items' para o serializer achar fácil
     transaction = models.ForeignKey(Transaction, on_delete=models.CASCADE, related_name='items')
-    product = models.ForeignKey(Product, on_delete=models.CASCADE)
-    quantity = models.DecimalField(max_digits=10, decimal_places=2)
-    unit_price = models.DecimalField(max_digits=10, decimal_places=2)
-    total_price = models.DecimalField(max_digits=10, decimal_places=2)
+    
+    # Mudança: Em vez de Product (ID), usamos Description (Texto)
+    description = models.CharField(max_length=255) 
+    
+    # Simplificando valores para alinhar com o frontend
+    value = models.DecimalField(max_digits=10, decimal_places=2) # Valor total do item
+    quantity = models.DecimalField(max_digits=10, decimal_places=2, default=1)
 
     def __str__(self):
-        return f"{self.quantity}x {self.product.name} em {self.transaction}"
+        return f"{self.description} ({self.quantity})"
     
 class HouseInvitation(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

@@ -2,7 +2,7 @@ from rest_framework import viewsets, permissions, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.db.models import Q, F
-from django.db import models 
+from django.db import models, transaction as db_transaction
 from dateutil.relativedelta import relativedelta
 import datetime
 from decimal import Decimal
@@ -250,96 +250,126 @@ class RecurringBillViewSet(BaseHouseViewSet):
     def get_queryset(self):
         return super().get_queryset().filter(is_active=True).order_by('due_day')
 
-class TransactionViewSet(BaseHouseViewSet):
+class TransactionViewSet(viewsets.ModelViewSet):
+    # --- CORREÇÃO AQUI: Adicione esta linha ---
     queryset = Transaction.objects.all()
-    serializer_class = TransactionSerializer
+    # ------------------------------------------
     
+    serializer_class = TransactionSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
     def get_queryset(self):
-        # Ordena por data (mais recente) e depois ID
-        return super().get_queryset().order_by('-date', '-id')
+        """
+        Filtra as transações para retornar apenas as da casa do usuário logado.
+        Ordena da mais recente para a mais antiga.
+        """
+        user = self.request.user
+        if hasattr(user, 'house_member') and user.house_member.house:
+            return Transaction.objects.filter(house=user.house_member.house).order_by('-date', '-id')
+        return Transaction.objects.none()
 
     def create(self, request, *args, **kwargs):
-        # 1. Extração segura dos dados
+        """
+        Criação personalizada para lidar com:
+        1. Validação de Saldo
+        2. Salvamento de Itens da Lista (Nested)
+        3. Parcelamento de Cartão
+        """
         data = request.data
-        payment_method = data.get('payment_method') # 'ACCOUNT' ou 'CREDIT_CARD'
-        transaction_type = data.get('type')         # 'INCOME' ou 'EXPENSE'
-        account_id = data.get('account')            # ID da conta
+        user = request.user
         
-        # 2. Tratamento do Valor (Evita erro 500 se vier vazio ou com vírgula)
+        # --- 1. Extração e Tratamento de Dados ---
+        payment_method = data.get('payment_method')
+        transaction_type = data.get('type')
+        account_id = data.get('account')
+        items_data = data.get('items', []) 
+
+        # Tratamento seguro do valor
         raw_value = data.get('value')
         try:
             if isinstance(raw_value, str):
-                # Troca vírgula por ponto para o Python entender
                 raw_value = raw_value.replace(',', '.')
             value = Decimal(str(raw_value))
         except (InvalidOperation, TypeError):
             return Response({'error': 'Valor inválido.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # 3. REGRA DE NEGÓCIO: Validação de Saldo (SOMENTE para Despesa em Conta)
+        # --- 2. Regra de Negócio: Validação de Saldo ---
         if transaction_type == 'EXPENSE' and payment_method == 'ACCOUNT':
             if not account_id:
-                 return Response({'error': 'Conta não selecionada.'}, status=status.HTTP_400_BAD_REQUEST)
-            
+                 return Response({'error': 'Conta não selecionada para o débito.'}, status=status.HTTP_400_BAD_REQUEST)
             try:
-                # Busca a conta para checar o saldo
-                account = Account.objects.get(id=account_id, house=request.user.house_member.house)
-                
-                # Se a despesa for maior que o saldo, bloqueia
+                account = Account.objects.get(id=account_id, house=user.house_member.house)
                 if value > account.balance:
                     return Response({
-                        'error': f'Saldo insuficiente. Disponível: R$ {account.balance}'
+                        'error': f'Saldo insuficiente na conta "{account.name}". Disponível: R$ {account.balance}'
                     }, status=status.HTTP_400_BAD_REQUEST)
-                    
             except Account.DoesNotExist:
-                return Response({'error': 'Conta não encontrada.'}, status=status.HTTP_404_NOT_FOUND)
+                return Response({'error': 'Conta selecionada não encontrada.'}, status=status.HTTP_404_NOT_FOUND)
 
-        # 4. CRIAÇÃO DE TRANSAÇÕES PARCELADAS (CARTÃO DE CRÉDITO)
-        if payment_method == 'CREDIT_CARD' and transaction_type == 'EXPENSE':
-            installments = int(data.get('installments', 1))
-            
-            if installments > 1:
-                # Lógica de Parcelamento: Cria N transações
-                base_description = data.get('description')
-                installment_value = value / installments
-                card_id = data.get('card_id') or data.get('card')
-                date_str = data.get('date')
-                category_id = data.get('category')
-
-                # Converte string de data para objeto date para somar meses
-                start_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
-
-                created_transactions = []
+        # --- 3. Gravação Atômica ---
+        try:
+            with db_transaction.atomic():
+                # A. Salva a Transação Principal
+                serializer = self.get_serializer(data=data)
+                serializer.is_valid(raise_exception=True)
                 
-                try:
-                    for i in range(installments):
-                        # Calcula a data da parcela (mês + i)
-                        # Nota: relativedelta é mais seguro, mas para simplificar sem imports extras:
-                        future_date = start_date + relativedelta(months=i)
-                        
-                        desc = f"{base_description} ({i+1}/{installments})"
-                        
-                        t = Transaction.objects.create(
-                            house=request.user.house_member.house,
-                            owner=request.user,
-                            description=desc,
-                            value=installment_value,
-                            type='EXPENSE',
-                            payment_method='CREDIT_CARD',
-                            card_id=card_id,
-                            date=future_date,
-                            category_id=category_id
-                        )
-                        created_transactions.append(t)
+                transaction_instance = serializer.save(
+                    house=user.house_member.house, 
+                    value=value
+                )
+
+                # B. Salva os Itens da Lista
+                if items_data and isinstance(items_data, list):
+                    items_objects = []
+                    for item in items_data:
+                        items_objects.append(TransactionItem(
+                            transaction=transaction_instance,
+                            description=item.get('description', 'Item sem nome'),
+                            value=Decimal(str(item.get('value', 0))),
+                            quantity=float(item.get('quantity', 1))
+                        ))
+                    TransactionItem.objects.bulk_create(items_objects)
+                
+                # C. Lógica de Parcelamento
+                if payment_method == 'CREDIT_CARD' and transaction_type == 'EXPENSE':
+                    installments = int(data.get('installments', 1))
                     
-                    return Response({'message': f'{installments} parcelas criadas com sucesso.'}, status=status.HTTP_201_CREATED)
+                    if installments > 1:
+                        base_desc = transaction_instance.description
+                        installment_val = value / installments
+                        
+                        # Atualiza a 1ª parcela
+                        transaction_instance.description = f"{base_desc} (1/{installments})"
+                        transaction_instance.value = installment_val
+                        transaction_instance.save()
 
-                except Exception as e:
-                    return Response({'error': f'Erro ao criar parcelas: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+                        # Gera as parcelas futuras
+                        start_date = transaction_instance.date
+                        new_transactions = []
+                        
+                        for i in range(1, installments):
+                            future_date = start_date + relativedelta(months=i)
+                            new_transactions.append(Transaction(
+                                house=transaction_instance.house,
+                                owner=transaction_instance.owner,
+                                description=f"{base_desc} ({i+1}/{installments})",
+                                value=installment_val,
+                                type='EXPENSE',
+                                payment_method='CREDIT_CARD',
+                                card=transaction_instance.card,
+                                date=future_date,
+                                category=transaction_instance.category,
+                                installments=installments
+                            ))
+                        
+                        Transaction.objects.bulk_create(new_transactions)
 
-        # 5. FLUXO PADRÃO (Receitas, Despesas à vista, Débito)
-        # O super().create() vai salvar, e o SIGNAL vai atualizar o saldo da conta.
-        return super().create(request, *args, **kwargs)
-       
+                headers = self.get_success_headers(serializer.data)
+                return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+        except Exception as e:
+            return Response({'error': f"Erro interno: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
+                   
 # ======================================================================
 # ESTOQUE E PRODUTOS
 # ======================================================================
@@ -408,105 +438,125 @@ class ShoppingListViewSet(BaseHouseViewSet):
     def finish(self, request):
         user = self.request.user
         house = user.house_member.house
+        data = request.data
         
-        payment_method = request.data.get('payment_method') 
-        source_id = request.data.get('source_id')
-        total_paid = Decimal(str(request.data.get('total_value', 0)))
-        purchase_date = request.data.get('date', datetime.date.today())
+        # 1. Dados da Requisição
+        payment_method = data.get('payment_method') 
+        source_id = data.get('source_id')
+        total_paid_str = str(data.get('total_value', 0)).replace(',', '.')
+        total_paid = Decimal(total_paid_str)
+        purchase_date = data.get('date', datetime.date.today())
 
         if not payment_method or not source_id:
             return Response({'error': 'Selecione uma forma de pagamento.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # 2. Busca itens do carrinho
         purchased_items = ShoppingList.objects.filter(house=house, is_purchased=True)
         if not purchased_items.exists():
             return Response({'error': 'Carrinho vazio. Marque os itens comprados.'}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            account = None
-            invoice = None
-            description = "Compra de Mercado"
+            with db_transaction.atomic():
+                account = None
+                # card = None  <-- Não precisamos guardar a variável card para salvar na transaction, só para lógica
+                invoice = None
+                description = "Compra de Mercado"
 
-            category, _ = Category.objects.get_or_create(
-                house=house,
-                name="Compras",
-                defaults={'type': 'EXPENSE'}
-            )
-
-            if payment_method == 'ACCOUNT':
-                account = Account.objects.get(id=source_id, house=house)
-                
-            elif payment_method == 'CREDIT_CARD':
-                card = CreditCard.objects.get(id=source_id, house=house)
-                if total_paid > card.limit_available:
-                    return Response({'error': 'Limite insuficiente no cartão.'}, status=status.HTTP_400_BAD_REQUEST)
-                
-                today = datetime.date.today()
-                if today.day >= card.closing_day:
-                    today = today + relativedelta(months=1)
-                ref_date = today.replace(day=1)
-                
-                invoice, _ = Invoice.objects.get_or_create(
-                    card=card, reference_date=ref_date,
-                    defaults={'value': 0, 'status': 'OPEN'}
-                )
-                invoice.value += total_paid
-                invoice.save()
-                
-                card.limit_available -= total_paid
-                card.save()
-                description = f"Mercado ({card.name})"
-
-            transaction = Transaction.objects.create(
-                house=house,
-                description=description,
-                value=total_paid,
-                type='EXPENSE',
-                account=account,
-                invoice=invoice,
-                category=category, 
-                date=purchase_date
-            )
-
-            count = 0
-            for shop_item in purchased_items:
-                qty = shop_item.quantity_to_buy
-                
-                price = shop_item.real_unit_price if shop_item.real_unit_price > 0 else shop_item.product.estimated_price
-                if shop_item.discount_unit_price > 0:
-                    price = shop_item.discount_unit_price
-
-                TransactionItem.objects.create(
-                    transaction=transaction,
-                    product=shop_item.product,
-                    quantity=qty,
-                    unit_price=price,
-                    total_price=price * qty
+                category, _ = Category.objects.get_or_create(
+                    house=house,
+                    name="Compras",
+                    defaults={'type': 'EXPENSE'}
                 )
 
-                inv_item, _ = InventoryItem.objects.get_or_create(
-                    house=house, product=shop_item.product, 
-                    defaults={'min_quantity': 1}
+                # 3. Lógica de Pagamento
+                if payment_method == 'ACCOUNT':
+                    account = Account.objects.get(id=source_id, house=house)
+                    if total_paid > account.balance:
+                         return Response({'error': f'Saldo insuficiente na conta {account.name}.'}, status=status.HTTP_400_BAD_REQUEST)
+                    description = f"Mercado ({account.name})"
+                
+                elif payment_method == 'CREDIT_CARD':
+                    card = CreditCard.objects.get(id=source_id, house=house)
+                    if total_paid > card.limit_available:
+                        return Response({'error': 'Limite insuficiente no cartão.'}, status=status.HTTP_400_BAD_REQUEST)
+                    
+                    # Lógica de Fatura
+                    today = datetime.date.today()
+                    if today.day >= card.closing_day:
+                        today = today + relativedelta(months=1)
+                    ref_date = today.replace(day=1)
+                    
+                    invoice, _ = Invoice.objects.get_or_create(
+                        card=card, reference_date=ref_date,
+                        defaults={'value': 0, 'status': 'OPEN'}
+                    )
+                    invoice.value += total_paid
+                    invoice.save()
+                    
+                    card.limit_available -= total_paid
+                    card.save()
+                    description = f"Mercado ({card.name})"
+
+                # 4. Cria a Transação Principal (CORRIGIDO AQUI)
+                transaction = Transaction.objects.create(
+                    house=house,
+                    # owner=user,     <-- Removido na etapa anterior
+                    description=description,
+                    value=total_paid,
+                    type='EXPENSE',
+                    # payment_method=payment_method, <-- REMOVIDO (Campo não existe no model)
+                    account=account,
+                    # card=card,                     <-- REMOVIDO (O vínculo é via 'invoice')
+                    invoice=invoice,
+                    category=category, 
+                    date=purchase_date
                 )
-                inv_item.quantity += qty
-                inv_item.save()
 
-                if price > 0 and price != shop_item.product.estimated_price:
-                    shop_item.product.estimated_price = price
-                    shop_item.product.save()
+                # 5. Processa os Itens
+                transaction_items = []
+                count = 0
 
-                shop_item.delete()
-                count += 1
+                for shop_item in purchased_items:
+                    qty = shop_item.quantity_to_buy
+                    
+                    unit_price = shop_item.real_unit_price
+                    if unit_price <= 0:
+                         unit_price = shop_item.discount_unit_price if shop_item.discount_unit_price > 0 else shop_item.product.estimated_price
 
-            return Response({'message': f'Compra finalizada! {count} itens processados.'}, status=status.HTTP_200_OK)
+                    item_total_value = unit_price * qty
+
+                    transaction_items.append(TransactionItem(
+                        transaction=transaction,
+                        description=shop_item.product.name, 
+                        quantity=qty,
+                        value=item_total_value 
+                    ))
+
+                    inv_item, _ = InventoryItem.objects.get_or_create(
+                        house=house, product=shop_item.product, 
+                        defaults={'min_quantity': 1, 'quantity': 0}
+                    )
+                    inv_item.quantity += qty
+                    inv_item.save()
+
+                    if unit_price > 0 and unit_price != shop_item.product.estimated_price:
+                        shop_item.product.estimated_price = unit_price
+                        shop_item.product.save()
+
+                    count += 1
+
+                TransactionItem.objects.bulk_create(transaction_items)
+                purchased_items.delete()
+
+                return Response({'message': f'Compra finalizada! {count} itens processados.'}, status=status.HTTP_200_OK)
 
         except Account.DoesNotExist:
-            return Response({'error': 'Conta não encontrada.'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({'error': 'Conta selecionada não encontrada.'}, status=status.HTTP_404_NOT_FOUND)
         except CreditCard.DoesNotExist:
-            return Response({'error': 'Cartão não encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({'error': 'Cartão selecionado não encontrado.'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
-            print(f"ERRO FINISH: {str(e)}") 
             return Response({'error': f"Erro interno: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
-
+        
 # ======================================================================
 # GESTÃO DE USUÁRIO E CONVITES
 # ======================================================================

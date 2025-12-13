@@ -78,22 +78,24 @@ class RecurringBillSerializer(serializers.ModelSerializer):
 # ... outros serializers
 
 class TransactionItemSerializer(serializers.ModelSerializer):
-    product_name = serializers.CharField(source='product.name', read_only=True)
     class Meta:
         model = TransactionItem
-        fields = ['id', 'product_name', 'quantity', 'unit_price', 'total_price']
+        fields = ['id', 'description', 'value', 'quantity']
 
 class TransactionSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source='category.name', read_only=True)
     account_name = serializers.CharField(source='account.name', read_only=True)
     
-    # ADICIONE ISTO:
+    # ESTA LINHA É OBRIGATÓRIA PARA A LISTA APARECER
     items = TransactionItemSerializer(many=True, read_only=True)
     
     class Meta:
         model = Transaction
-        fields = '__all__'
-        read_only_fields = ['house']
+        fields = [
+            'id', 'description', 'value', 'type', 'date', 
+            'category', 'category_name', 'account', 'account_name', 
+            'invoice', 'items' # <--- CONFIRA SE 'items' ESTÁ NA LISTA DE CAMPOS
+        ]
 
 # --- ESTOQUE E COMPRAS ---
 
