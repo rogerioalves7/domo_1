@@ -2,199 +2,252 @@ import { useState, useEffect } from 'react';
 import api from '../services/api';
 import toast from 'react-hot-toast';
 import MoneyInput from './MoneyInput';
-import Input from './Input';
-import { FileText, Calendar, Tag, Wallet, ArrowLeft, Plus, CreditCard, Layers } from 'lucide-react';
+import { Save, Calendar, Tag, FileText, CreditCard, Wallet } from 'lucide-react';
 
-export default function NewTransactionForm({ type, onSuccess, onBack, onManageCategories, accounts, cards }) {
+export default function NewTransactionForm({ type, accounts, cards, onSuccess, onManageCategories }) {
+  
   const [description, setDescription] = useState('');
   const [value, setValue] = useState('');
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [category, setCategory] = useState('');
-  
-  // Novos Estados
-  const [paymentMethod, setPaymentMethod] = useState('ACCOUNT'); // 'ACCOUNT' ou 'CREDIT_CARD'
-  const [selectedId, setSelectedId] = useState(''); // ID da Conta ou do Cartão
+  const [accountId, setAccountId] = useState('');
+  const [cardId, setCardId] = useState('');
+  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [installments, setInstallments] = useState(1);
-  
+  const [paymentMethod, setPaymentMethod] = useState('ACCOUNT'); 
   const [categoriesList, setCategoriesList] = useState([]);
   const [loading, setLoading] = useState(false);
 
-  const isExpense = type === 'EXPENSE';
-
+  // Carrega categorias
   useEffect(() => {
-    async function loadData() {
-        try {
-            const response = await api.get('/categories/');
-            const filtered = response.data.filter(cat => cat.type === type);
-            setCategoriesList(filtered);
-            
-            // Auto-seleção inicial
-            if (paymentMethod === 'ACCOUNT' && accounts.length > 0) setSelectedId(accounts[0].id);
-            if (paymentMethod === 'CREDIT_CARD' && cards.length > 0) setSelectedId(cards[0].id);
-
-        } catch (e) {
-            console.error("Erro ao carregar dados", e);
-        }
+    async function loadCategories() {
+      try {
+        const response = await api.get('/categories/');
+        setCategoriesList(response.data.filter(c => c.type === type));
+      } catch (error) {
+        console.error("Erro ao carregar categorias", error);
+      }
     }
-    loadData();
-  }, [type, accounts, cards]);
+    loadCategories();
+  }, [type]);
 
-  // Reseta o ID selecionado quando troca o método
+  // Define padrões
   useEffect(() => {
-      if (paymentMethod === 'ACCOUNT' && accounts.length > 0) setSelectedId(accounts[0].id);
-      else if (paymentMethod === 'CREDIT_CARD' && cards.length > 0) setSelectedId(cards[0].id);
-      else setSelectedId('');
-  }, [paymentMethod, accounts, cards]);
+    if (accounts.length > 0 && !accountId) setAccountId(accounts[0].id);
+    if (cards.length > 0 && !cardId) setCardId(cards[0].id);
+  }, [accounts, cards, accountId, cardId]);
 
   async function handleSubmit(e) {
     e.preventDefault();
-    if (!selectedId) return toast.error("Selecione uma forma de pagamento.");
+    if (!description || !value) return toast.error("Preencha descrição e valor.");
     
     setLoading(true);
+    console.log("1. Iniciando envio...");
 
-    try {
-      const finalValue = typeof value === 'string' ? parseFloat(value.replace(',', '.')) : value;
+    // Tratamento de valor seguro (troca vírgula por ponto se necessário)
+    let finalValue = value;
+    if (typeof value === 'string') {
+        finalValue = parseFloat(value.replace(',', '.'));
+    }
 
-      const payload = {
+    const payload = {
         description,
         value: finalValue,
-        type: type,
-        date: date,
-        category: category ? parseInt(category) : null,
-        // Campos Dinâmicos
+        type,
+        date,
+        category: category || null,
         payment_method: paymentMethod,
-        installments: parseInt(installments)
-      };
+        // Envio correto para o backend
+        account: paymentMethod === 'ACCOUNT' ? accountId : null,
+        card_id: paymentMethod === 'CREDIT_CARD' ? cardId : null,
+        installments: paymentMethod === 'CREDIT_CARD' ? installments : 1
+    };
 
-      if (paymentMethod === 'ACCOUNT') {
-          payload.account = parseInt(selectedId);
-      } else {
-          payload.card_id = parseInt(selectedId); // O Backend espera 'card_id' na nossa lógica customizada
+    try {
+      console.log("2. Enviando payload:", payload);
+      await api.post('/transactions/', payload);
+      console.log("3. Sucesso na API!");
+
+      // --- MUDANÇA CRÍTICA: FECHAR O MODAL PRIMEIRO ---
+      // Se o Toast falhar, o modal já fechou e o usuário não trava.
+      if (onSuccess) {
+          console.log("4. Fechando modal...");
+          onSuccess(); 
       }
 
-      await api.post('/transactions/', payload);
-
-      toast.success(isExpense ? "Despesa lançada!" : "Receita recebida!");
-      onSuccess();
+      // Tenta exibir o Toast
+      try {
+          toast.success(type === 'INCOME' ? "Receita adicionada!" : "Despesa adicionada!");
+      } catch (toastError) {
+          console.warn("Erro ao exibir toast (mas a transação foi salva):", toastError);
+      }
 
     } catch (error) {
-      console.error(error);
-      toast.error("Erro ao lançar transação.");
+      console.error("Erro no processo:", error);
+      const errorMsg = error.response?.data?.error || "Erro ao salvar transação.";
+      toast.error(errorMsg);
     } finally {
+      // Só tira o loading se o componente ainda estiver montado (embora onSuccess deva desmontá-lo)
       setLoading(false);
     }
   }
 
+  const isExpense = type === 'EXPENSE';
+  const colorClass = isExpense ? 'text-rose-600 focus:ring-rose-500' : 'text-emerald-600 focus:ring-emerald-500';
+  const bgClass = isExpense ? 'bg-rose-50 border-rose-100 dark:bg-rose-900/10 dark:border-rose-900/30' : 'bg-emerald-50 border-emerald-100 dark:bg-emerald-900/10 dark:border-emerald-900/30';
+
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      
-      <div className="flex items-center mb-2">
-         {onBack && (
-            <button type="button" onClick={onBack} className="flex items-center text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition">
-                <ArrowLeft size={16} className="mr-1" /> Voltar
-            </button>
-         )}
-         <span className={`ml-auto text-xs font-bold px-2 py-1 rounded-full ${isExpense ? 'bg-rose-100 text-rose-600' : 'bg-emerald-100 text-emerald-600'}`}>
-            {isExpense ? 'Nova Despesa' : 'Nova Receita'}
-         </span>
-      </div>
-
-      <div>
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Descrição</label>
-        <Input 
-            type="text" 
-            required 
-            placeholder={isExpense ? "Ex: Supermercado..." : "Ex: Salário..."}
-            value={description} 
-            onChange={e => setDescription(e.target.value)} 
-            icon={FileText} 
-        />
-      </div>
-
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Valor</label>
-            <MoneyInput value={value} onValueChange={setValue} />
+    <form onSubmit={handleSubmit} className="space-y-5">
+        
+        {/* Cabeçalho */}
+        <div className={`p-4 rounded-xl border ${bgClass} flex items-center gap-3`}>
+            <div className={`p-2 rounded-full bg-white dark:bg-slate-800 ${isExpense ? 'text-rose-500' : 'text-emerald-500'}`}>
+                {isExpense ? <CreditCard size={20}/> : <Wallet size={20}/>}
+            </div>
+            <div>
+                <h3 className={`font-bold ${isExpense ? 'text-rose-700 dark:text-rose-400' : 'text-emerald-700 dark:text-emerald-400'}`}>
+                    {isExpense ? 'Nova Despesa' : 'Nova Receita'}
+                </h3>
+            </div>
         </div>
-        <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Data</label>
-            <Input type="date" required value={date} onChange={e => setDate(e.target.value)} icon={Calendar} />
+
+        {/* Campos Principais */}
+        <div className="grid grid-cols-2 gap-4">
+            <div className="col-span-2">
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1 ml-1">Descrição</label>
+                <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
+                        <FileText size={18} />
+                    </div>
+                    <input 
+                        type="text" 
+                        placeholder={isExpense ? "Ex: Mercado, Luz..." : "Ex: Salário, Venda..."}
+                        className={`w-full pl-10 p-3 rounded-xl bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 outline-none focus:ring-2 ${colorClass} transition-all`}
+                        value={description}
+                        onChange={e => setDescription(e.target.value)}
+                        autoFocus
+                    />
+                </div>
+            </div>
+
+            <div className="col-span-2 md:col-span-1">
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1 ml-1">Valor</label>
+                <MoneyInput 
+                    value={value} 
+                    onValueChange={setValue} 
+                    placeholder="0,00"
+                />
+            </div>
+
+            <div className="col-span-2 md:col-span-1">
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1 ml-1">Data</label>
+                <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
+                        <Calendar size={18} />
+                    </div>
+                    <input 
+                        type="date" 
+                        className={`w-full pl-10 p-3 rounded-xl bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 outline-none focus:ring-2 ${colorClass} transition-all`}
+                        value={date}
+                        onChange={e => setDate(e.target.value)}
+                    />
+                </div>
+            </div>
         </div>
-      </div>
 
-      {/* SELEÇÃO DE MÉTODO (Só aparece para Despesa) */}
-      {isExpense && (
-          <div className="flex bg-gray-100 dark:bg-slate-800 p-1 rounded-xl">
-              <button
-                type="button"
-                onClick={() => setPaymentMethod('ACCOUNT')}
-                className={`flex-1 py-2 text-sm font-medium rounded-lg transition-all flex items-center justify-center gap-2
-                    ${paymentMethod === 'ACCOUNT' ? 'bg-white dark:bg-slate-600 shadow text-teal-600 dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}
-              >
-                  <Wallet size={16}/> Débito / Conta
-              </button>
-              <button
-                type="button"
-                onClick={() => setPaymentMethod('CREDIT_CARD')}
-                className={`flex-1 py-2 text-sm font-medium rounded-lg transition-all flex items-center justify-center gap-2
-                    ${paymentMethod === 'CREDIT_CARD' ? 'bg-white dark:bg-slate-600 shadow text-purple-600 dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}
-              >
-                  <CreditCard size={16}/> Cartão Crédito
-              </button>
-          </div>
-      )}
+        {/* Método de Pagamento (Só para despesas) */}
+        {isExpense && (
+            <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-2 ml-1">Método de Pagamento</label>
+                <div className="flex gap-2">
+                    <button 
+                        type="button"
+                        onClick={() => setPaymentMethod('ACCOUNT')}
+                        className={`flex-1 py-2.5 px-4 rounded-xl border font-bold text-sm transition-all flex items-center justify-center gap-2
+                        ${paymentMethod === 'ACCOUNT' 
+                            ? 'bg-emerald-100 border-emerald-200 text-emerald-700 dark:bg-emerald-900/20 dark:border-emerald-800 dark:text-emerald-400' 
+                            : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50 dark:bg-slate-800 dark:border-slate-700 dark:text-gray-400'}`}
+                    >
+                        <Wallet size={16} /> Débito / Pix
+                    </button>
+                    <button 
+                        type="button"
+                        onClick={() => setPaymentMethod('CREDIT_CARD')}
+                        className={`flex-1 py-2.5 px-4 rounded-xl border font-bold text-sm transition-all flex items-center justify-center gap-2
+                        ${paymentMethod === 'CREDIT_CARD' 
+                            ? 'bg-purple-100 border-purple-200 text-purple-700 dark:bg-purple-900/20 dark:border-purple-800 dark:text-purple-400' 
+                            : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50 dark:bg-slate-800 dark:border-slate-700 dark:text-gray-400'}`}
+                    >
+                        <CreditCard size={16} /> Cartão de Crédito
+                    </button>
+                </div>
+            </div>
+        )}
 
-      {/* SELEÇÃO DA ORIGEM (Dinâmica baseada no método) */}
-      <div>
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-            {paymentMethod === 'ACCOUNT' ? 'Debitar da Conta' : 'Faturar no Cartão'}
-        </label>
-        <div className="relative">
+        {/* Seleção de Conta ou Cartão */}
+        <div>
             {paymentMethod === 'ACCOUNT' ? (
-                <Wallet className="absolute left-3 top-3.5 text-gray-400 pointer-events-none z-10" size={20} />
+                <>
+                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1 ml-1">
+                        {isExpense ? 'Debitar de' : 'Creditar em'}
+                    </label>
+                    <select 
+                        className={`w-full p-3 rounded-xl bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 outline-none focus:ring-2 ${colorClass}`}
+                        value={accountId}
+                        onChange={e => setAccountId(e.target.value)}
+                    >
+                        {accounts.map(acc => (
+                            <option key={acc.id} value={acc.id}>{acc.name} (R$ {Number(acc.balance).toLocaleString('pt-BR', {minimumFractionDigits: 2})})</option>
+                        ))}
+                    </select>
+                </>
             ) : (
-                <CreditCard className="absolute left-3 top-3.5 text-purple-500 pointer-events-none z-10" size={20} />
+                <>
+                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1 ml-1">Usar Cartão</label>
+                    <select 
+                        className="w-full p-3 rounded-xl bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 outline-none focus:ring-2 focus:ring-purple-500"
+                        value={cardId}
+                        onChange={e => setCardId(e.target.value)}
+                    >
+                        {cards.map(card => (
+                            <option key={card.id} value={card.id}>{card.name} (Disp: R$ {Number(card.limit_available).toLocaleString('pt-BR')})</option>
+                        ))}
+                    </select>
+                    
+                    <div className="mt-3">
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1 ml-1">Parcelas</label>
+                        <select 
+                            className="w-full p-3 rounded-xl bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 outline-none focus:ring-2 focus:ring-purple-500"
+                            value={installments}
+                            onChange={e => setInstallments(parseInt(e.target.value))}
+                        >
+                            <option value={1}>À vista (1x)</option>
+                            {[...Array(11)].map((_, i) => (
+                                <option key={i+2} value={i+2}>{i+2}x</option>
+                            ))}
+                        </select>
+                    </div>
+                </>
             )}
-            
-            <select
-                value={selectedId}
-                onChange={e => setSelectedId(e.target.value)}
-                required
-                className="w-full pl-10 pr-4 py-3 rounded-xl appearance-none bg-white border border-gray-200 text-gray-900 dark:bg-slate-900 dark:border-slate-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-teal-500"
-            >
-                <option value="" disabled>Selecione...</option>
-                {paymentMethod === 'ACCOUNT' 
-                    ? accounts.map(acc => <option key={acc.id} value={acc.id}>{acc.name} (R$ {acc.balance})</option>)
-                    : cards.map(card => <option key={card.id} value={card.id}>{card.name}</option>)
-                }
-            </select>
         </div>
-      </div>
 
-      {/* PARCELAS (Só aparece se for Cartão) */}
-      {paymentMethod === 'CREDIT_CARD' && (
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Parcelas</label>
-            <Input 
-                type="number" 
-                min="1" 
-                max="48"
-                value={installments} 
-                onChange={e => setInstallments(e.target.value)} 
-                icon={Layers} 
-            />
-          </div>
-      )}
-
-      <div>
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Categoria</label>
-        <div className="flex gap-2">
-            <div className="relative flex-1">
-                <Tag className="absolute left-3 top-3.5 text-gray-400 pointer-events-none z-10" size={20} />
-                <select
+        {/* Categoria */}
+        <div>
+            <div className="flex justify-between items-center mb-1 ml-1">
+                <label className="block text-xs font-bold text-gray-500 uppercase">Categoria</label>
+                {onManageCategories && (
+                    <button type="button" onClick={onManageCategories} className="text-[10px] text-teal-600 hover:underline font-bold">
+                        Gerenciar
+                    </button>
+                )}
+            </div>
+            <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
+                    <Tag size={18} />
+                </div>
+                <select 
+                    className={`w-full pl-10 p-3 rounded-xl bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 outline-none focus:ring-2 ${colorClass}`}
                     value={category}
                     onChange={e => setCategory(e.target.value)}
-                    className="w-full pl-10 pr-4 py-3 rounded-xl appearance-none bg-white border border-gray-200 text-gray-900 dark:bg-slate-900 dark:border-slate-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-teal-500"
                 >
                     <option value="">Sem categoria</option>
                     {categoriesList.map(cat => (
@@ -202,25 +255,18 @@ export default function NewTransactionForm({ type, onSuccess, onBack, onManageCa
                     ))}
                 </select>
             </div>
-            <button 
-                type="button"
-                onClick={onManageCategories}
-                className="bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 text-gray-600 dark:text-gray-300 p-3 rounded-xl transition border border-gray-200 dark:border-slate-700"
-            >
-                <Plus size={24} />
-            </button>
         </div>
-      </div>
 
-      <button 
-        type="submit" 
-        disabled={loading} 
-        className={`w-full text-white font-bold py-3 rounded-xl active:scale-95 transition disabled:opacity-50 
-            ${isExpense ? 'bg-rose-600 hover:bg-rose-500' : 'bg-emerald-600 hover:bg-emerald-500'}`}
-      >
-        {loading ? 'Salvando...' : (isExpense ? 'Confirmar Despesa' : 'Confirmar Receita')}
-      </button>
-
+        <button 
+            type="submit" 
+            disabled={loading}
+            className={`w-full flex items-center justify-center gap-2 text-white font-bold py-3.5 rounded-xl shadow-lg transition-all active:scale-95 disabled:opacity-70
+            ${isExpense 
+                ? 'bg-rose-600 hover:bg-rose-500 shadow-rose-200 dark:shadow-none' 
+                : 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-200 dark:shadow-none'}`}
+        >
+            {loading ? 'Salvando...' : <><Save size={20} /> Confirmar {isExpense ? 'Despesa' : 'Receita'}</>}
+        </button>
     </form>
   );
 }
