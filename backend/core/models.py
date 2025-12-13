@@ -47,6 +47,7 @@ class Account(models.Model):
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='owned_accounts')
     name = models.CharField(max_length=50)
     balance = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    limit = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     is_shared = models.BooleanField(default=True, verbose_name="Compartilhado com a casa?")
 
     def __str__(self):

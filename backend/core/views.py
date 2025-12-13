@@ -186,18 +186,24 @@ class AccountViewSet(BaseHouseViewSet):
     serializer_class = AccountSerializer
     def get_queryset(self):
         user = self.request.user
-        if not hasattr(user, 'house_member'): return Account.objects.none()
-        house = user.house_member.house
-        return Account.objects.filter(house=house).filter(Q(owner=user) | Q(is_shared=True))
+        if hasattr(user, 'house_member') and user.house_member.house:
+            house = user.house_member.house
+            return Account.objects.filter(house=house).filter(
+                Q(is_shared=True) | Q(owner=user)
+            )
+        return Account.objects.none()
 
 class CreditCardViewSet(BaseHouseViewSet):
     queryset = CreditCard.objects.all()
     serializer_class = CreditCardSerializer
     def get_queryset(self):
         user = self.request.user
-        if not hasattr(user, 'house_member'): return CreditCard.objects.none()
-        house = user.house_member.house
-        return CreditCard.objects.filter(house=house).filter(Q(owner=user) | Q(is_shared=True))
+        if hasattr(user, 'house_member') and user.house_member.house:
+            house = user.house_member.house
+            return CreditCard.objects.filter(house=house).filter(
+                Q(is_shared=True) | Q(owner=user)
+            )
+        return CreditCard.objects.none()
 
 class InvoiceViewSet(BaseHouseViewSet):
     queryset = Invoice.objects.all()
@@ -277,7 +283,18 @@ class TransactionViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         if hasattr(user, 'house_member') and user.house_member.house:
-            return Transaction.objects.filter(house=user.house_member.house).order_by('-date', '-id')
+            house = user.house_member.house
+            
+            return Transaction.objects.filter(house=house).filter(
+                # 1. Regra para CONTA (se tiver conta vinculada)
+                (Q(account__isnull=True) | Q(account__is_shared=True) | Q(account__owner=user))
+            ).filter(
+                # 2. Regra para CARTÃO (via Fatura/Invoice)
+                # Aceita se não tiver fatura (é débito/dinheiro)
+                # OU se tiver fatura, o cartão dela for compartilhado ou meu
+                (Q(invoice__isnull=True) | Q(invoice__card__is_shared=True) | Q(invoice__card__owner=user))
+            ).order_by('-date', '-id')
+            
         return Transaction.objects.none()
 
     def create(self, request, *args, **kwargs):
@@ -320,10 +337,14 @@ class TransactionViewSet(viewsets.ModelViewSet):
                     if not account_id:
                          return Response({'error': 'Selecione uma conta.'}, status=status.HTTP_400_BAD_REQUEST)
                     account = Account.objects.get(id=account_id, house=house)
-                    if total_value > account.balance:
-                        return Response({'error': f'Saldo insuficiente: {account.name}'}, status=status.HTTP_400_BAD_REQUEST)
                     
-                    account.balance -= total_value # Subtrai
+                    # NOVA LÓGICA: Saldo + Limite
+                    purchasing_power = account.balance + account.limit
+                    
+                    if total_value > purchasing_power:
+                        return Response({'error': f'Saldo insuficiente (incluindo limite) na conta: {account.name}'}, status=status.HTTP_400_BAD_REQUEST)
+                    
+                    account.balance -= total_value
                     account.save()
 
                 # --- Lógica: DESPESA (CARTÃO DE CRÉDITO) ---

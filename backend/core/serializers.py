@@ -39,7 +39,8 @@ class CategorySerializer(serializers.ModelSerializer):
 class AccountSerializer(serializers.ModelSerializer):
     class Meta:
         model = Account
-        fields = '__all__'
+        # Adicione 'limit' na lista ou use '__all__'
+        fields = ['id', 'name', 'balance', 'limit', 'is_shared', 'house', 'owner'] 
         read_only_fields = ['house', 'owner']
 
 class InvoiceSerializer(serializers.ModelSerializer):
