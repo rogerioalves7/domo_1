@@ -247,129 +247,212 @@ class InvoiceViewSet(BaseHouseViewSet):
 class RecurringBillViewSet(BaseHouseViewSet):
     queryset = RecurringBill.objects.all()
     serializer_class = RecurringBillSerializer
-    def get_queryset(self):
-        return super().get_queryset().filter(is_active=True).order_by('due_day')
+
+    def create(self, request, *args, **kwargs):
+        house = request.user.house_member.house
+        name = request.data.get('name')
+        
+        # Validação de Duplicidade
+        if RecurringBill.objects.filter(house=house, name__iexact=name).exists():
+            return Response({'error': 'Já existe uma conta fixa com este nome.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        return super().create(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        house = request.user.house_member.house
+        name = request.data.get('name')
+        instance = self.get_object()
+        
+        # Validação de Duplicidade (ignorando o próprio item)
+        if RecurringBill.objects.filter(house=house, name__iexact=name).exclude(id=instance.id).exists():
+            return Response({'error': 'Já existe uma conta fixa com este nome.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        return super().update(request, *args, **kwargs)
 
 class TransactionViewSet(viewsets.ModelViewSet):
-    # --- CORREÇÃO AQUI: Adicione esta linha ---
     queryset = Transaction.objects.all()
-    # ------------------------------------------
-    
     serializer_class = TransactionSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        """
-        Filtra as transações para retornar apenas as da casa do usuário logado.
-        Ordena da mais recente para a mais antiga.
-        """
         user = self.request.user
         if hasattr(user, 'house_member') and user.house_member.house:
             return Transaction.objects.filter(house=user.house_member.house).order_by('-date', '-id')
         return Transaction.objects.none()
 
     def create(self, request, *args, **kwargs):
-        """
-        Criação personalizada para lidar com:
-        1. Validação de Saldo
-        2. Salvamento de Itens da Lista (Nested)
-        3. Parcelamento de Cartão
-        """
         data = request.data
         user = request.user
+        house = user.house_member.house
         
-        # --- 1. Extração e Tratamento de Dados ---
+        # 1. Dados Básicos
         payment_method = data.get('payment_method')
         transaction_type = data.get('type')
-        account_id = data.get('account')
+        
+        account_id = data.get('account') or data.get('account_id')
+        card_id = data.get('card') or data.get('card_id')
+
+        # Fallback de IDs
+        if payment_method == 'CREDIT_CARD' and not card_id and account_id:
+            card_id = account_id
+            account_id = None
+
         items_data = data.get('items', []) 
 
-        # Tratamento seguro do valor
+        # Tratamento de Valor
         raw_value = data.get('value')
         try:
             if isinstance(raw_value, str):
                 raw_value = raw_value.replace(',', '.')
-            value = Decimal(str(raw_value))
+            total_value = Decimal(str(raw_value))
         except (InvalidOperation, TypeError):
             return Response({'error': 'Valor inválido.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # --- 2. Regra de Negócio: Validação de Saldo ---
-        if transaction_type == 'EXPENSE' and payment_method == 'ACCOUNT':
-            if not account_id:
-                 return Response({'error': 'Conta não selecionada para o débito.'}, status=status.HTTP_400_BAD_REQUEST)
-            try:
-                account = Account.objects.get(id=account_id, house=user.house_member.house)
-                if value > account.balance:
-                    return Response({
-                        'error': f'Saldo insuficiente na conta "{account.name}". Disponível: R$ {account.balance}'
-                    }, status=status.HTTP_400_BAD_REQUEST)
-            except Account.DoesNotExist:
-                return Response({'error': 'Conta selecionada não encontrada.'}, status=status.HTTP_404_NOT_FOUND)
-
-        # --- 3. Gravação Atômica ---
+        # 2. Validações e Preparação
         try:
             with db_transaction.atomic():
-                # A. Salva a Transação Principal
-                serializer = self.get_serializer(data=data)
-                serializer.is_valid(raise_exception=True)
+                account = None
+                card = None
+                invoice = None
                 
-                transaction_instance = serializer.save(
-                    house=user.house_member.house, 
-                    value=value
+                # --- Lógica: DESPESA (CONTA CORRENTE) ---
+                if transaction_type == 'EXPENSE' and payment_method == 'ACCOUNT':
+                    if not account_id:
+                         return Response({'error': 'Selecione uma conta.'}, status=status.HTTP_400_BAD_REQUEST)
+                    account = Account.objects.get(id=account_id, house=house)
+                    if total_value > account.balance:
+                        return Response({'error': f'Saldo insuficiente: {account.name}'}, status=status.HTTP_400_BAD_REQUEST)
+                    
+                    account.balance -= total_value # Subtrai
+                    account.save()
+
+                # --- Lógica: DESPESA (CARTÃO DE CRÉDITO) ---
+                elif transaction_type == 'EXPENSE' and payment_method == 'CREDIT_CARD':
+                    if not card_id:
+                        return Response({'error': 'Selecione um cartão.'}, status=status.HTTP_400_BAD_REQUEST)
+                    
+                    card = CreditCard.objects.get(id=card_id, house=house)
+                    
+                    if total_value > card.limit_available:
+                        return Response({'error': 'Limite indisponível.'}, status=status.HTTP_400_BAD_REQUEST)
+                    
+                    card.limit_available -= total_value
+                    card.save()
+
+                    # Lógica de Fatura
+                    today = datetime.date.today()
+                    tx_date_str = data.get('date')
+                    if tx_date_str:
+                        tx_date = datetime.datetime.strptime(tx_date_str, "%Y-%m-%d").date()
+                    else:
+                        tx_date = today
+
+                    if tx_date.day >= card.closing_day:
+                        ref_date = (tx_date + relativedelta(months=1)).replace(day=1)
+                    else:
+                        ref_date = tx_date.replace(day=1)
+
+                    invoice, _ = Invoice.objects.get_or_create(
+                        card=card, reference_date=ref_date,
+                        defaults={'value': 0, 'status': 'OPEN'}
+                    )
+                    
+                    installments = int(data.get('installments', 1))
+                    first_installment_value = total_value / installments
+                    
+                    invoice.value += first_installment_value
+                    invoice.save()
+
+                # --- Lógica: RECEITA (INCOME) - ADICIONADO AGORA ---
+                elif transaction_type == 'INCOME':
+                    if not account_id:
+                        return Response({'error': 'Selecione uma conta para receber.'}, status=status.HTTP_400_BAD_REQUEST)
+                    
+                    account = Account.objects.get(id=account_id, house=house)
+                    account.balance += total_value # SOMA ao saldo
+                    account.save()
+
+
+                # 3. Salva a Transação Principal
+                installments = int(data.get('installments', 1))
+                final_desc = data.get('description')
+                final_val = total_value
+
+                if installments > 1:
+                    final_desc = f"{data.get('description')} (1/{installments})"
+                    final_val = total_value / installments
+
+                transaction_instance = Transaction.objects.create(
+                    house=house,
+                    description=final_desc,
+                    value=final_val,
+                    type=transaction_type,
+                    date=data.get('date', datetime.date.today()),
+                    category_id=data.get('category'),
+                    account=account,
+                    invoice=invoice,
+                    recurring_bill_id=data.get('recurring_bill')
                 )
 
-                # B. Salva os Itens da Lista
+                # 4. Salva os Itens
                 if items_data and isinstance(items_data, list):
                     items_objects = []
                     for item in items_data:
                         items_objects.append(TransactionItem(
                             transaction=transaction_instance,
-                            description=item.get('description', 'Item sem nome'),
+                            description=item.get('description', 'Item'),
                             value=Decimal(str(item.get('value', 0))),
                             quantity=float(item.get('quantity', 1))
                         ))
                     TransactionItem.objects.bulk_create(items_objects)
                 
-                # C. Lógica de Parcelamento
-                if payment_method == 'CREDIT_CARD' and transaction_type == 'EXPENSE':
-                    installments = int(data.get('installments', 1))
+                # 5. Gera Parcelas Futuras (Apenas Despesas no Cartão)
+                if installments > 1 and card and transaction_type == 'EXPENSE':
+                    installment_val = total_value / installments
+                    new_transactions = []
                     
-                    if installments > 1:
-                        base_desc = transaction_instance.description
-                        installment_val = value / installments
+                    base_date = transaction_instance.date
+                    if isinstance(base_date, str):
+                        base_date = datetime.datetime.strptime(base_date, "%Y-%m-%d").date()
+                    
+                    for i in range(1, installments):
+                        future_date = base_date + relativedelta(months=i)
                         
-                        # Atualiza a 1ª parcela
-                        transaction_instance.description = f"{base_desc} (1/{installments})"
-                        transaction_instance.value = installment_val
-                        transaction_instance.save()
+                        if future_date.day >= card.closing_day:
+                             fut_ref = (future_date + relativedelta(months=1)).replace(day=1)
+                        else:
+                             fut_ref = future_date.replace(day=1)
 
-                        # Gera as parcelas futuras
-                        start_date = transaction_instance.date
-                        new_transactions = []
-                        
-                        for i in range(1, installments):
-                            future_date = start_date + relativedelta(months=i)
-                            new_transactions.append(Transaction(
-                                house=transaction_instance.house,
-                                owner=transaction_instance.owner,
-                                description=f"{base_desc} ({i+1}/{installments})",
-                                value=installment_val,
-                                type='EXPENSE',
-                                payment_method='CREDIT_CARD',
-                                card=transaction_instance.card,
-                                date=future_date,
-                                category=transaction_instance.category,
-                                installments=installments
-                            ))
-                        
-                        Transaction.objects.bulk_create(new_transactions)
+                        fut_invoice, _ = Invoice.objects.get_or_create(
+                            card=card, reference_date=fut_ref,
+                            defaults={'value': 0, 'status': 'OPEN'}
+                        )
+                        fut_invoice.value += installment_val
+                        fut_invoice.save()
 
+                        new_transactions.append(Transaction(
+                            house=house,
+                            description=f"{data.get('description')} ({i+1}/{installments})",
+                            value=installment_val,
+                            type='EXPENSE',
+                            invoice=fut_invoice, 
+                            date=future_date,
+                            category_id=data.get('category')
+                        ))
+                    
+                    Transaction.objects.bulk_create(new_transactions)
+
+                serializer = self.get_serializer(transaction_instance)
                 headers = self.get_success_headers(serializer.data)
                 return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
+        except Account.DoesNotExist:
+             return Response({'error': 'Conta não encontrada.'}, status=status.HTTP_400_BAD_REQUEST)
+        except CreditCard.DoesNotExist:
+             return Response({'error': 'Cartão não encontrado.'}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({'error': f"Erro interno: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
-                   
+ 
 # ======================================================================
 # ESTOQUE E PRODUTOS
 # ======================================================================

@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
+from django.utils import timezone
 from .models import (
     House, HouseMember, Account, CreditCard, Invoice, 
     Transaction, Product, InventoryItem, ShoppingList, 
@@ -55,27 +56,50 @@ class CreditCardSerializer(serializers.ModelSerializer):
         read_only_fields = ['house', 'owner']
 
     def get_invoice_info(self, obj):
+        # Pega a primeira fatura ABERTA ou FECHADA (mas não PAGA)
+        # Ordena pela data mais antiga para mostrar a próxima a vencer
         invoice = obj.invoices.exclude(status='PAID').order_by('reference_date').first()
+        
         if invoice:
+            # Garante que o valor exibido desconte o que já foi pago parcialmente
             remaining = invoice.value - invoice.amount_paid
             if remaining < 0: remaining = 0
+            
             return {
                 'id': invoice.id,
-                'value': remaining,
+                'value': remaining, # Aqui vai o valor atualizado pela View
                 'total_value': invoice.value,
-                'status': invoice.get_status_display(),
-                'due_date': invoice.reference_date
+                'status': invoice.get_status_display(), # Aberta/Fechada
+                'due_date': invoice.reference_date # Data aproximada
             }
-        return {'id': None, 'value': 0, 'status': 'Sem fatura', 'due_date': None}
-
+        
+        # Se não tiver nenhuma fatura pendente
+        return {
+            'id': None, 
+            'value': 0, 
+            'status': 'Sem Fatura', 
+            'due_date': None
+        }
+    
 class RecurringBillSerializer(serializers.ModelSerializer):
+    # Campo extra para informar se está pago
+    is_paid_this_month = serializers.SerializerMethodField()
     category_name = serializers.CharField(source='category.name', read_only=True)
+
     class Meta:
         model = RecurringBill
-        fields = '__all__'
+        fields = ['id', 'name', 'base_value', 'due_day', 'category', 'category_name', 'is_paid_this_month']
         read_only_fields = ['house']
 
-# ... outros serializers
+    def get_is_paid_this_month(self, obj):
+        now = timezone.now()
+        # Procura uma transação nesta casa, vinculada a esta conta fixa, no mês e ano atuais
+        return Transaction.objects.filter(
+            house=obj.house,
+            recurring_bill=obj,
+            date__month=now.month,
+            date__year=now.year
+        ).exists()
 
 class TransactionItemSerializer(serializers.ModelSerializer):
     class Meta:

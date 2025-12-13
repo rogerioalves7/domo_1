@@ -114,14 +114,14 @@ class Transaction(models.Model):
         super().save(*args, **kwargs)
 
         # 3. Lógica de Atualização de Saldo (Apenas se for novo e tiver conta vinculada)
-        if is_new and self.account:
+        """if is_new and self.account:
             if self.type == 'EXPENSE':
                 self.account.balance -= self.value
             elif self.type == 'INCOME':
                 self.account.balance += self.value
             
             # Salva a alteração na conta
-            self.account.save()
+            self.account.save()"""
 
     def __str__(self):
         return f"{self.description} - R$ {self.value}"
