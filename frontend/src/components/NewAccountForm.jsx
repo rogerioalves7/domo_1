@@ -8,14 +8,14 @@ import { useTheme } from '../context/ThemeContext';
 export default function NewAccountForm({ onSuccess, onBack, initialData = null }) {
   const { theme } = useTheme();
   
+  // RESTAURADO: Inicialização direta, sem useEffect complexo de formatação
   const [name, setName] = useState(initialData?.name || '');
   const [balance, setBalance] = useState(initialData?.balance || 0);
-  const [limit, setLimit] = useState(initialData?.limit || 0); // <--- NOVO ESTADO
+  const [limit, setLimit] = useState(initialData?.limit || 0);
   const [isShared, setIsShared] = useState(initialData?.is_shared || false);
   const [loading, setLoading] = useState(false);
 
-  // --- LÓGICA DE EXCLUSÃO (MANTIDA IGUAL) ---
-
+  // --- LÓGICA DE EXCLUSÃO ---
   async function executeDelete(toastId) {
     toast.dismiss(toastId);
     setLoading(true);
@@ -36,60 +36,43 @@ export default function NewAccountForm({ onSuccess, onBack, initialData = null }
     toast((t) => (
       <div className="flex flex-col gap-3 min-w-[260px] p-1">
         <div className="flex items-start gap-3">
-            <div className="bg-rose-100 p-2 rounded-full text-rose-500">
-                <Trash2 size={20} />
-            </div>
+            <div className="bg-rose-100 p-2 rounded-full text-rose-500"><Trash2 size={20} /></div>
             <div>
                 <p className="font-bold text-gray-800 dark:text-gray-100 text-sm">Excluir Conta?</p>
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                    Isso pode afetar o histórico financeiro vinculado.
-                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Isso pode afetar o histórico financeiro vinculado.</p>
             </div>
         </div>
-        
         <div className="flex justify-end gap-2 pt-2 border-t border-gray-100 dark:border-slate-700 mt-1">
-          <button 
-            onClick={() => toast.dismiss(t.id)}
-            className="px-3 py-1.5 text-xs font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-lg transition"
-          >
-            Cancelar
-          </button>
-          <button 
-            onClick={() => executeDelete(t.id)}
-            className="px-3 py-1.5 text-xs font-bold text-white bg-rose-500 hover:bg-rose-600 rounded-lg shadow-sm transition"
-          >
-            Sim, excluir
-          </button>
+          <button onClick={() => toast.dismiss(t.id)} className="px-3 py-1.5 text-xs font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-lg transition">Cancelar</button>
+          <button onClick={() => executeDelete(t.id)} className="px-3 py-1.5 text-xs font-bold text-white bg-rose-500 hover:bg-rose-600 rounded-lg shadow-sm transition">Sim, excluir</button>
         </div>
       </div>
     ), { 
-        duration: Infinity, 
-        position: 'top-center',
-        style: {
-            background: theme === 'dark' ? '#1E293B' : '#fff',
-            color: theme === 'dark' ? '#fff' : '#333',
-        }
+        duration: Infinity, position: 'top-center',
+        style: { background: theme === 'dark' ? '#1E293B' : '#fff', color: theme === 'dark' ? '#fff' : '#333' }
     });
   }
 
-  // --- LÓGICA DE SALVAR ---
-
+  // --- LÓGICA DE SALVAR (ROBUSTA) ---
   async function handleSubmit(e) {
     e.preventDefault();
     if (!name) return toast.error("O nome da conta é obrigatório.");
 
     setLoading(true);
     try {
-      // Função auxiliar para garantir float correto (independente se veio string "1.000,00" ou number)
+      // Função que converte APENAS se for string formatada (ex: "1.000,50")
+      // Se já for número (ex: 1000.50), mantém como está.
       const parseCurrency = (val) => {
+          if (!val) return 0;
           if (typeof val === 'number') return val;
+          // Remove pontos de milhar e troca vírgula decimal por ponto
           return parseFloat(val.toString().replace(/\./g, '').replace(',', '.'));
       };
 
       const payload = {
         name,
         balance: parseCurrency(balance),
-        limit: parseCurrency(limit), // <--- INCLUI O LIMITE
+        limit: parseCurrency(limit),
         is_shared: isShared
       };
 
@@ -135,14 +118,13 @@ export default function NewAccountForm({ onSuccess, onBack, initialData = null }
             <input 
                 type="text" 
                 placeholder="Ex: Nubank, Carteira, Cofre..." 
-                className="w-full p-3 rounded-xl bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 outline-none focus:ring-2 focus:ring-teal-500 transition-all font-medium"
+                className="w-full p-3 rounded-xl bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 outline-none focus:ring-2 focus:ring-teal-500 transition-all font-medium dark:text-white"
                 value={name}
                 onChange={e => setName(e.target.value)}
                 autoFocus
             />
         </div>
 
-        {/* GRID PARA SALDO E LIMITE */}
         <div className="grid grid-cols-2 gap-4">
             <div>
                 <label className="block text-xs font-bold text-gray-500 uppercase mb-1 ml-1">Saldo Atual</label>
@@ -165,15 +147,13 @@ export default function NewAccountForm({ onSuccess, onBack, initialData = null }
             </div>
         </div>
         
-        {/* Dica visual sobre o poder de compra */}
-        {(Number(limit) > 0 || typeof limit === 'string' && limit !== '' && limit !== '0,00') && (
+        {((typeof limit === 'number' && limit > 0) || (typeof limit === 'string' && limit !== '' && limit !== '0,00' && limit !== '0')) && (
             <div className="flex items-center gap-2 p-2 rounded-lg bg-emerald-50 dark:bg-emerald-900/10 border border-emerald-100 dark:border-emerald-900/20 text-xs text-emerald-700 dark:text-emerald-400">
                 <TrendingDown size={14} />
                 <span>Poder de compra total: <strong>Saldo + Limite</strong></span>
             </div>
         )}
 
-        {/* Toggle Compartilhado */}
         <div 
             onClick={() => setIsShared(!isShared)}
             className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-all
@@ -200,39 +180,21 @@ export default function NewAccountForm({ onSuccess, onBack, initialData = null }
         </div>
       </div>
 
-      {/* Botões de Ação */}
       <div className="flex gap-3 pt-2">
         {onBack && (
-            <button 
-                type="button" 
-                onClick={onBack}
-                className="p-3 rounded-xl bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-slate-700 transition"
-            >
+            <button type="button" onClick={onBack} className="p-3 rounded-xl bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-slate-700 transition">
                 <X size={20} />
             </button>
         )}
-
-        {/* Botão de Excluir (Só aparece na edição) */}
         {initialData && (
-            <button 
-                type="button" 
-                onClick={confirmDelete}
-                className="p-3 rounded-xl bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 hover:bg-rose-200 dark:hover:bg-rose-900/50 transition"
-                title="Excluir Conta"
-            >
+            <button type="button" onClick={confirmDelete} className="p-3 rounded-xl bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 hover:bg-rose-200 dark:hover:bg-rose-900/50 transition" title="Excluir Conta">
                 <Trash2 size={20} />
             </button>
         )}
-
-        <button 
-            type="submit" 
-            disabled={loading}
-            className="flex-1 flex items-center justify-center gap-2 bg-teal-600 hover:bg-teal-500 text-white font-bold py-3 rounded-xl shadow-lg shadow-teal-200 dark:shadow-none transition-all active:scale-95 disabled:opacity-70"
-        >
+        <button type="submit" disabled={loading} className="flex-1 flex items-center justify-center gap-2 bg-teal-600 hover:bg-teal-500 text-white font-bold py-3 rounded-xl shadow-lg shadow-teal-200 dark:shadow-none transition-all active:scale-95 disabled:opacity-70">
             {loading ? 'Salvando...' : <><Save size={20} /> Salvar Conta</>}
         </button>
       </div>
-
     </form>
   );
 }

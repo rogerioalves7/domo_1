@@ -15,7 +15,7 @@ import logoImg from '../assets/logo.png';
 import { 
   Plus, ArrowUpCircle, ArrowDownCircle, CreditCard, Wallet, 
   Sun, Moon, Calendar, TrendingUp, ArrowUpRight, ArrowDownLeft, 
-  ShoppingBag, CheckCircle2, AlertCircle, FileText, Check
+  ShoppingBag, CheckCircle2, AlertCircle, FileText, Lock, Users
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -29,8 +29,11 @@ export default function Dashboard() {
   const [recentTransactions, setRecentTransactions] = useState([]);
   const [loading, setLoading] = useState(true);
   
+  // --- ESTADOS ---
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalView, setModalView] = useState('MENU'); 
+  const [lastModalView, setLastModalView] = useState(null);
+  
   const [editingItem, setEditingItem] = useState(null);
   const [transactionType, setTransactionType] = useState('EXPENSE');
   const [viewTransaction, setViewTransaction] = useState(null);
@@ -43,13 +46,11 @@ export default function Dashboard() {
   const [paymentAccount, setPaymentAccount] = useState('');
   const [paymentCard, setPaymentCard] = useState('');
 
+  // Cálculos
   const totalBalance = accounts.reduce((acc, item) => acc + Number(item.balance), 0);
-  
   const totalInvoices = cards.reduce((acc, card) => acc + (Number(card.invoice_info?.value) || 0), 0);
-  
-  // CORREÇÃO PREVISÃO: Só soma contas fixas que NÃO foram pagas ainda
   const totalFixedBills = recurringBills.reduce((acc, bill) => {
-      if (bill.is_paid_this_month) return acc; // Se já pagou, não entra na previsão de gasto futuro
+      if (bill.is_paid_this_month) return acc; 
       return acc + Number(bill.base_value);
   }, 0);
 
@@ -93,6 +94,39 @@ export default function Dashboard() {
   useEffect(() => {
     loadDashboardData();
   }, []);
+
+  // --- ACTIONS ---
+  async function handleToggleAccountPrivacy(e, account) {
+    e.stopPropagation(); 
+    const newStatus = !account.is_shared;
+    setAccounts(prev => prev.map(acc => acc.id === account.id ? { ...acc, is_shared: newStatus } : acc));
+    try {
+        await api.patch(`/accounts/${account.id}/`, { is_shared: newStatus });
+        toast.success(newStatus ? "Conta agora é Compartilhada" : "Conta agora é Privada", { icon: newStatus ? '👥' : '🔒' });
+    } catch (error) {
+        toast.error("Erro ao atualizar privacidade.");
+        loadDashboardData(); 
+    }
+  }
+
+  async function handleToggleCardPrivacy(e, card) {
+    e.stopPropagation(); 
+    const newStatus = !card.is_shared;
+    setCards(prev => prev.map(c => c.id === card.id ? { ...c, is_shared: newStatus } : c));
+    try {
+        await api.patch(`/credit-cards/${card.id}/`, { is_shared: newStatus });
+        toast.success(newStatus ? "Cartão agora é Compartilhado" : "Cartão agora é Privado", { icon: newStatus ? '👥' : '🔒' });
+    } catch (error) {
+        toast.error("Erro ao atualizar privacidade.");
+        loadDashboardData();
+    }
+  }
+
+  // --- MODALS ---
+  const openCategoryManager = (fromView) => {
+      setLastModalView(fromView); 
+      setModalView('CATEGORY_MANAGER');
+  };
 
   const handleOpenForecastDetails = () => {
       setModalView('FORECAST_DETAILS');
@@ -148,12 +182,10 @@ export default function Dashboard() {
     e.preventDefault(); if (!paymentAccount) return toast.error("Selecione uma conta.");
     try {
         const finalValue = typeof paymentValue === 'string' ? parseFloat(paymentValue.replace(',', '.')) : paymentValue;
-        
         await api.post('/transactions/', { 
             description: billToPay.name, 
             value: finalValue, 
             type: 'EXPENSE', 
-            // CORREÇÃO: Passando o ID da categoria explicitamente
             category: billToPay.category, 
             payment_method: 'ACCOUNT', 
             account: paymentAccount, 
@@ -181,6 +213,7 @@ export default function Dashboard() {
             </header>
             <main className="w-full px-4 md:px-8 pb-32 md:pb-10 space-y-8">
 
+                {/* RESUMO */}
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                     <div className="lg:col-span-2 bg-gradient-to-r from-teal-600 to-teal-500 dark:from-teal-900/50 dark:to-teal-800/50 rounded-3xl p-6 shadow-lg shadow-teal-500/20 dark:shadow-none text-white flex justify-between items-center relative overflow-hidden h-44">
                         <div className="z-10 relative">
@@ -206,20 +239,116 @@ export default function Dashboard() {
                     </div>
                 </div>
 
+                {/* LEGENDA */}
+                <div className="flex justify-end gap-4 px-1">
+                    <div className="flex items-center gap-1.5">
+                        <Lock size={12} className="text-gray-400" />
+                        <span className="text-[10px] text-gray-500 font-medium uppercase tracking-wide">Privado</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                        <Users size={12} className="text-blue-500" />
+                        <span className="text-[10px] text-blue-500 font-medium uppercase tracking-wide">Compartilhado</span>
+                    </div>
+                </div>
+
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    
+                    {/* CONTAS */}
                     <div>
                         <div className="flex justify-between items-center mb-4 px-1"><h2 className="font-bold text-gray-700 dark:text-gray-300">Minhas Contas</h2><button onClick={() => { setEditingItem(null); setModalView('ACCOUNT'); setIsModalOpen(true); }} className="text-teal-600 text-xs font-bold hover:underline">+ Adicionar</button></div>
-                        <div className="space-y-3">{accounts.map(acc => (<div key={acc.id} onClick={() => handleEditGeneric(acc, 'ACCOUNT')} className="cursor-pointer flex justify-between items-center p-4 bg-white dark:bg-[#1E293B] border border-gray-100 dark:border-slate-700 rounded-2xl shadow-sm hover:scale-[1.01] transition-transform min-h-[85px]"><div className="flex items-center gap-3"><div className={`p-2 rounded-full ${acc.is_shared ? 'bg-blue-50 text-blue-600' : 'bg-gray-100 text-gray-500'} dark:bg-slate-800`}><Wallet size={18} /></div><p className="font-bold text-sm">{acc.name}</p></div><span className="font-bold text-gray-800 dark:text-gray-200">R$ {Number(acc.balance).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span></div>))}{accounts.length === 0 && <p className="text-center text-sm text-gray-400 py-4">Sem contas.</p>}</div>
+                        <div className="space-y-3">
+                            {accounts.map(acc => (
+                                <div key={acc.id} onClick={() => handleEditGeneric(acc, 'ACCOUNT')} className="cursor-pointer flex justify-between items-center p-4 bg-white dark:bg-[#1E293B] border border-gray-100 dark:border-slate-700 rounded-2xl shadow-sm hover:scale-[1.01] transition-transform min-h-[85px]">
+                                    <div className="flex items-center gap-3">
+                                        <div className={`p-2 rounded-full ${acc.is_shared ? 'bg-blue-50 text-blue-600' : 'bg-gray-100 text-gray-500'} dark:bg-slate-800`}>
+                                            <Wallet size={18} />
+                                        </div>
+                                        <div>
+                                            <p className="font-bold text-sm">{acc.name}</p>
+                                            <div className="flex items-center gap-2 mt-0.5">
+                                                <button 
+                                                    onClick={(e) => handleToggleAccountPrivacy(e, acc)}
+                                                    className={`p-1 rounded-md transition-colors ${acc.is_shared ? 'text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20' : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-slate-700'}`}
+                                                    title={acc.is_shared ? "Compartilhado" : "Privado"}
+                                                >
+                                                    {acc.is_shared ? <Users size={12} /> : <Lock size={12} />}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <span className="font-bold text-gray-800 dark:text-gray-200">R$ {Number(acc.balance).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                                </div>
+                            ))}
+                            {accounts.length === 0 && <p className="text-center text-sm text-gray-400 py-4">Sem contas.</p>}
+                        </div>
                     </div>
+
+                    {/* CARTÕES (COM LÓGICA DE STATUS "FECHADA" CORRIGIDA) */}
                     <div>
                         <div className="flex justify-between items-center mb-4 px-1"><h2 className="font-bold text-gray-700 dark:text-gray-300">Meus Cartões</h2><button onClick={() => { setEditingItem(null); setModalView('CARD'); setIsModalOpen(true); }} className="text-purple-600 text-xs font-bold hover:underline">+ Adicionar</button></div>
                         <div className="space-y-3">{cards.map(card => {
-                            const invoiceVal = card.invoice_info?.value || 0; const invoiceStatus = card.invoice_info?.status || 'Sem Fatura'; const avail = Number(card.limit_available); const total = Number(card.limit_total); const percentage = total === 0 ? 0 : Math.min(100, Math.max(0, (avail / total) * 100)); const statusColor = invoiceStatus === 'Fechada' ? 'text-red-600' : 'text-rose-500';
-                            return (<div key={card.id} onClick={() => handleEditGeneric(card, 'CARD')} className="cursor-pointer flex justify-between items-center p-4 bg-white dark:bg-[#1E293B] border border-gray-100 dark:border-slate-700 rounded-2xl shadow-sm hover:scale-[1.01] transition-transform min-h-[85px]"><div className="flex items-center gap-3"><div className="p-2 rounded-full bg-purple-50 dark:bg-purple-900/20 text-purple-600"><CreditCard size={18} /></div><div><p className="font-bold text-sm text-gray-800 dark:text-gray-200">{card.name}</p>{Number(invoiceVal) > 0 ? (<div className="flex items-center gap-2"><p className={`text-[10px] font-bold ${statusColor}`}>{invoiceStatus}: R$ {Number(invoiceVal).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p><button onClick={(e) => { e.stopPropagation(); handleOpenPayInvoice(card); }} className="px-2 py-0.5 bg-rose-600 text-white text-[10px] font-bold rounded hover:bg-rose-700 transition active:scale-95">Pagar</button></div>) : <p className="text-[10px] text-emerald-500 font-bold">Fatura em dia</p>}</div></div><div className="text-right min-w-[80px]"><span className="font-bold text-gray-800 dark:text-gray-200 block text-sm">R$ {avail.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span><span className="text-[10px] text-gray-400">Disp.</span><div className="w-full h-1 bg-gray-100 dark:bg-slate-700 rounded-full mt-1 overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-400 to-blue-500" style={{ width: `${percentage}%` }} /></div></div></div>);
+                            const invoiceVal = card.invoice_info?.value || 0; 
+                            
+                            // Lógica para detectar status FECHADA visualmente se hoje >= dia_fechamento
+                            const todayDay = new Date().getDate();
+                            const isVisuallyClosed = todayDay >= card.closing_day;
+                            const apiStatus = card.invoice_info?.status || 'OPEN';
+                            
+                            const invoiceStatus = (isVisuallyClosed && apiStatus !== 'PAID') ? 'Fechada' : (apiStatus === 'PAID' ? 'Paga' : 'Aberta');
+                            const statusColor = invoiceStatus === 'Fechada' ? 'text-red-600' : (invoiceStatus === 'Paga' ? 'text-emerald-600' : 'text-rose-500');
+
+                            const avail = Number(card.limit_available); const total = Number(card.limit_total); const percentage = total === 0 ? 0 : Math.min(100, Math.max(0, (avail / total) * 100)); 
+                            
+                            return (
+                                <div key={card.id} onClick={() => handleEditGeneric(card, 'CARD')} className="cursor-pointer flex justify-between items-center p-4 bg-white dark:bg-[#1E293B] border border-gray-100 dark:border-slate-700 rounded-2xl shadow-sm hover:scale-[1.01] transition-transform min-h-[85px]">
+                                    <div className="flex items-center gap-3">
+                                        <div className="p-2 rounded-full bg-purple-50 dark:bg-purple-900/20 text-purple-600"><CreditCard size={18} /></div>
+                                        <div>
+                                            <p className="font-bold text-sm text-gray-800 dark:text-gray-200">{card.name}</p>
+                                            
+                                            <div className="flex items-center gap-2 mt-0.5">
+                                                <button 
+                                                    onClick={(e) => handleToggleCardPrivacy(e, card)}
+                                                    className={`p-1 rounded-md transition-colors ${card.is_shared ? 'text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20' : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-slate-700'}`}
+                                                    title={card.is_shared ? "Compartilhado" : "Privado"}
+                                                >
+                                                    {card.is_shared ? <Users size={12} /> : <Lock size={12} />}
+                                                </button>
+
+                                                {Number(invoiceVal) > 0 ? (
+                                                    <div className="flex items-center gap-2">
+                                                        <div className="flex flex-col leading-tight">
+                                                            <p className={`text-[10px] font-bold ${statusColor}`}>
+                                                                {invoiceStatus}: R$ {Number(invoiceVal).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                                            </p>
+                                                            {/* DATA DE VENCIMENTO VISUAL */}
+                                                            <p className="text-[9px] text-gray-400 font-medium">Vence dia {card.due_day}</p>
+                                                        </div>
+                                                        {/* Botão Pagar só aparece se tiver valor */}
+                                                        <button 
+                                                            onClick={(e) => { e.stopPropagation(); handleOpenPayInvoice(card); }} 
+                                                            className="ml-1 px-2 py-0.5 bg-rose-600 text-white text-[10px] font-bold rounded hover:bg-rose-700 transition active:scale-95 shadow-sm"
+                                                        >
+                                                            Pagar
+                                                        </button>
+                                                    </div>
+                                                ) : (
+                                                    <div className="flex flex-col leading-tight">
+                                                        <p className="text-[10px] text-emerald-500 font-bold">Fatura em dia</p>
+                                                        <p className="text-[9px] text-gray-400 font-medium">Vence dia {card.due_day}</p>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className="text-right min-w-[80px]"><span className="font-bold text-gray-800 dark:text-gray-200 block text-sm">R$ {avail.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span><span className="text-[10px] text-gray-400">Disp.</span><div className="w-full h-1 bg-gray-100 dark:bg-slate-700 rounded-full mt-1 overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-400 to-blue-500" style={{ width: `${percentage}%` }} /></div></div>
+                                </div>
+                            );
                         })}{cards.length === 0 && <p className="text-center text-sm text-gray-400 py-4">Sem cartões.</p>}</div>
                     </div>
                 </div>
 
+                {/* RECORRENTES E HISTÓRICO */}
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                     <div className="lg:col-span-1">
                         <div className="flex justify-between items-center mb-4 px-1"><h2 className="font-bold text-gray-700 dark:text-gray-300">Contas Fixas</h2><button onClick={() => { setEditingItem(null); setModalView('RECURRING'); setIsModalOpen(true); }} className="text-orange-600 text-xs font-bold hover:underline">+ Adicionar</button></div>
@@ -229,37 +358,14 @@ export default function Dashboard() {
                             ) : (
                                 recurringBills.map(bill => (
                                 <div key={bill.id} className={`flex justify-between items-center p-3 bg-white dark:bg-[#1E293B] border border-gray-100 dark:border-slate-700/50 rounded-xl shadow-sm ${bill.is_paid_this_month ? 'opacity-70' : ''}`}>
-                                    
-                                    {/* LADO ESQUERDO: Clicar aqui abre a EDIÇÃO */}
-                                    <div 
-                                        onClick={() => handleEditGeneric(bill, 'RECURRING')} 
-                                        className="flex items-center gap-3 cursor-pointer hover:opacity-80 transition"
-                                        title="Clique para editar"
-                                    >
+                                    <div onClick={() => handleEditGeneric(bill, 'RECURRING')} className="flex items-center gap-3 cursor-pointer hover:opacity-80 transition" title="Clique para editar">
                                         <div className="p-2 rounded-lg bg-orange-50 dark:bg-orange-900/20 text-orange-600"><Calendar size={16}/></div>
                                         <div>
-                                            <p className="font-bold text-sm text-gray-800 dark:text-gray-200 flex items-center gap-1">
-                                                {bill.name}
-                                                {bill.is_paid_this_month && <CheckCircle2 size={12} className="text-emerald-500"/>}
-                                            </p>
-                                            <p className="text-[10px] text-gray-500">{bill.category_name || 'Geral'} • Dia {bill.due_day} • R$ {Number(bill.base_value).toLocaleString('pt-BR')}</p>
+                                            <p className="font-bold text-sm text-gray-800 dark:text-gray-200 flex items-center gap-1">{bill.name}{bill.is_paid_this_month && <CheckCircle2 size={12} className="text-emerald-500"/>}</p>
+                                            <p className="text-xs text-gray-500">{bill.category_name || 'Geral'} • Dia {bill.due_day} • R$ {Number(bill.base_value).toLocaleString('pt-BR')}</p>
                                         </div>
                                     </div>
-
-                                    {/* LADO DIREITO: Botão de PAGAR (só se não estiver pago) */}
-                                    {!bill.is_paid_this_month ? (
-                                        <button 
-                                            onClick={(e) => {
-                                                e.stopPropagation(); // Impede que abra a edição ao clicar em pagar
-                                                handleOpenPayModal(bill);
-                                            }} 
-                                            className="px-3 py-1 bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-gray-300 text-[10px] font-bold rounded-lg hover:bg-emerald-500 hover:text-white transition"
-                                        >
-                                            Pagar
-                                        </button>
-                                    ) : (
-                                        <span className="text-[10px] font-bold text-emerald-500 px-2 border border-emerald-100 rounded bg-emerald-50">Pago</span>
-                                    )}
+                                    {!bill.is_paid_this_month ? (<button onClick={(e) => { e.stopPropagation(); handleOpenPayModal(bill); }} className="px-3 py-1 bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-gray-300 text-[10px] font-bold rounded-lg hover:bg-emerald-500 hover:text-white transition">Pagar</button>) : (<span className="text-[10px] font-bold text-emerald-500 px-2 border border-emerald-100 rounded bg-emerald-50">Pago</span>)}
                                 </div>
                             ))
                             )}
@@ -281,9 +387,31 @@ export default function Dashboard() {
         {modalView === 'MENU' && <div className="grid grid-cols-1 gap-3"><MenuOption icon={Wallet} label="Conta Corrente" onClick={() => setModalView('ACCOUNT')} color="teal" /><MenuOption icon={CreditCard} label="Cartão de Crédito" onClick={() => setModalView('CARD')} color="purple" /><MenuOption icon={Calendar} label="Conta Recorrente" onClick={() => setModalView('RECURRING')} color="orange" /></div>}
         {modalView === 'ACCOUNT' && <NewAccountForm initialData={editingItem} onBack={!editingItem ? () => setModalView('MENU') : null} onSuccess={() => { setIsModalOpen(false); loadDashboardData(); }} />}
         {modalView === 'CARD' && <NewCreditCardForm initialData={editingItem} onBack={!editingItem ? () => setModalView('MENU') : null} onSuccess={() => { setIsModalOpen(false); loadDashboardData(); }} />}
-        {modalView === 'RECURRING' && <NewRecurringBillForm initialData={editingItem} onBack={!editingItem ? () => setModalView('MENU') : null} onManageCategories={() => setModalView('CATEGORY_MANAGER')} onSuccess={() => { setIsModalOpen(false); loadDashboardData(); }} />}
-        {modalView === 'NEW_TRANSACTION' && <NewTransactionForm type={transactionType} accounts={accounts} cards={cards} onManageCategories={() => setModalView('CATEGORY_MANAGER')} onSuccess={() => { setIsModalOpen(false); loadDashboardData(); }} />}
-        {modalView === 'CATEGORY_MANAGER' && <CategoryManager onBack={() => { if(transactionType) setModalView('NEW_TRANSACTION'); else setModalView('RECURRING'); }} />}
+        
+        {modalView === 'RECURRING' && (
+            <NewRecurringBillForm 
+                initialData={editingItem} 
+                onBack={!editingItem ? () => setModalView('MENU') : null} 
+                onManageCategories={() => openCategoryManager('RECURRING')} 
+                onSuccess={() => { setIsModalOpen(false); loadDashboardData(); }} 
+            />
+        )}
+
+        {modalView === 'NEW_TRANSACTION' && (
+            <NewTransactionForm 
+                type={transactionType} 
+                accounts={accounts} 
+                cards={cards} 
+                onManageCategories={() => openCategoryManager('NEW_TRANSACTION')} 
+                onSuccess={() => { setIsModalOpen(false); loadDashboardData(); }} 
+            />
+        )}
+        
+        {modalView === 'CATEGORY_MANAGER' && (
+            <CategoryManager 
+                onBack={() => setModalView(lastModalView || 'MENU')} 
+            />
+        )}
         
         {modalView === 'VIEW_TRANSACTION' && viewTransaction && (
             <div className="space-y-4">
@@ -303,8 +431,11 @@ export default function Dashboard() {
             </div>
         )}
 
-        {modalView === 'PAY_BILL' && billToPay && (<form onSubmit={confirmPayment} className="space-y-4"><div className="bg-gray-50 dark:bg-slate-900 p-4 rounded-xl"><p className="text-sm text-gray-500">Pagando:</p><p className="font-bold text-lg">{billToPay.name}</p></div><div><label className="block text-xs font-bold text-gray-500 uppercase mb-1">Valor</label><MoneyInput value={paymentValue} onValueChange={setPaymentValue} /></div><div><label className="block text-xs font-bold text-gray-500 uppercase mb-1">Conta</label><select className="w-full p-3 rounded-xl bg-white dark:bg-slate-900 border" value={paymentAccount} onChange={e => setPaymentAccount(e.target.value)} required>{accounts.map(acc => <option key={acc.id} value={acc.id}>{acc.name} (R$ {acc.balance})</option>)}</select></div><button type="submit" className="w-full bg-teal-600 text-white font-bold py-3 rounded-xl">Confirmar</button></form>)}
-        {modalView === 'PAY_INVOICE' && invoiceToPay && (<form onSubmit={confirmInvoicePayment} className="space-y-4"><div className="bg-rose-50 dark:bg-rose-900/10 p-4 rounded-xl border border-rose-100 dark:border-rose-900/30"><p className="text-sm text-rose-500 mb-1">Fatura do Cartão:</p><p className="font-bold text-lg text-gray-800 dark:text-white">{invoiceToPay.name}</p></div><div><label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Valor a Pagar</label><MoneyInput value={paymentValue} onValueChange={setPaymentValue} /></div><div><label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Pagar usando:</label><div className="grid grid-cols-2 gap-3 mb-3"><button type="button" onClick={() => setPayMethod('ACCOUNT')} className={`flex flex-col items-center justify-center p-3 rounded-xl border transition-all ${payMethod === 'ACCOUNT' ? 'bg-teal-50 border-teal-500 text-teal-700 dark:bg-teal-900/20 dark:text-teal-400' : 'bg-white border-gray-200 text-gray-500 dark:bg-slate-800 dark:border-slate-700'}`}><div className="flex items-center gap-2 mb-1"><Wallet size={18} /><span className="font-bold text-sm">Saldo em Conta</span></div>{payMethod === 'ACCOUNT' && <CheckCircle2 size={16} className="text-teal-500" />}</button><button type="button" onClick={() => setPayMethod('CARD')} className={`flex flex-col items-center justify-center p-3 rounded-xl border transition-all ${payMethod === 'CARD' ? 'bg-purple-50 border-purple-500 text-purple-700 dark:bg-purple-900/20 dark:text-purple-400' : 'bg-white border-gray-200 text-gray-500 dark:bg-slate-800 dark:border-slate-700'}`}><div className="flex items-center gap-2 mb-1"><CreditCard size={18} /><span className="font-bold text-sm">Outro Cartão</span></div>{payMethod === 'CARD' && <CheckCircle2 size={16} className="text-purple-500" />}</button></div>{payMethod === 'ACCOUNT' ? (<select className="w-full p-3 rounded-xl bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-700 text-gray-800 dark:text-white outline-none focus:ring-2 focus:ring-teal-500" value={paymentAccount} onChange={e => setPaymentAccount(e.target.value)} required>{accounts.map(acc => <option key={acc.id} value={acc.id}>{acc.name} (R$ {acc.balance})</option>)}</select>) : (<select className="w-full p-3 rounded-xl bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-700 text-gray-800 dark:text-white outline-none focus:ring-2 focus:ring-purple-500" value={paymentCard} onChange={e => setPaymentCard(e.target.value)} required>{cards.filter(c => c.id !== invoiceToPay.cardId).map(c => (<option key={c.id} value={c.id}>{c.name} (Disp: R$ {Number(c.limit_available).toLocaleString('pt-BR')})</option>))}{cards.filter(c => c.id !== invoiceToPay.cardId).length === 0 && (<option disabled>Sem outros cartões disponíveis</option>)}</select>)}</div><button type="submit" className="w-full bg-rose-600 text-white font-bold py-3 rounded-xl hover:bg-rose-500 active:scale-95 transition">Confirmar Pagamento</button></form>)}
+        {/* MODAL: PAGAR CONTA RECORRENTE (CORRIGIDO) */}
+        {modalView === 'PAY_BILL' && billToPay && (<form onSubmit={confirmPayment} className="space-y-4"><div className="bg-gray-50 dark:bg-slate-900 p-4 rounded-xl border border-gray-100 dark:border-slate-700"><p className="text-sm text-gray-500 dark:text-gray-400">Pagando:</p><p className="font-bold text-lg text-gray-800 dark:text-white">{billToPay.name}</p></div><div><label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase mb-1">Valor</label><MoneyInput value={paymentValue} onValueChange={setPaymentValue} /></div><div><label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase mb-1">Conta para débito</label><div className="relative"><select className="w-full p-3 rounded-xl bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-700 text-gray-800 dark:text-white outline-none focus:ring-2 focus:ring-teal-500 appearance-none" value={paymentAccount} onChange={e => setPaymentAccount(e.target.value)} required>{accounts.map(acc => (<option key={acc.id} value={acc.id}>{acc.name} (R$ {Number(acc.balance).toLocaleString('pt-BR', { minimumFractionDigits: 2 })})</option>))}</select><div className="absolute right-3 top-3.5 pointer-events-none text-gray-400"><ArrowDownCircle size={16} /></div></div></div><button type="submit" className="w-full bg-teal-600 text-white font-bold py-3 rounded-xl hover:bg-teal-500 active:scale-95 transition shadow-lg shadow-teal-500/20">Confirmar Pagamento</button></form>)}
+        
+        {/* MODAL: PAGAR FATURA (CORRIGIDO) */}
+        {modalView === 'PAY_INVOICE' && invoiceToPay && (<form onSubmit={confirmInvoicePayment} className="space-y-4"><div className="bg-rose-50 dark:bg-rose-900/10 p-4 rounded-xl border border-rose-100 dark:border-rose-900/30"><p className="text-sm text-rose-500 mb-1 font-bold">Fatura do Cartão:</p><p className="font-bold text-lg text-gray-800 dark:text-white">{invoiceToPay.name}</p></div><div><label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Valor a Pagar</label><MoneyInput value={paymentValue} onValueChange={setPaymentValue} /></div><div><label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Pagar usando:</label><div className="grid grid-cols-2 gap-3 mb-3"><button type="button" onClick={() => setPayMethod('ACCOUNT')} className={`flex flex-col items-center justify-center p-3 rounded-xl border transition-all ${payMethod === 'ACCOUNT' ? 'bg-teal-50 border-teal-500 text-teal-700 dark:bg-teal-900/20 dark:text-teal-400' : 'bg-white border-gray-200 text-gray-500 dark:bg-slate-800 dark:border-slate-700'}`}><div className="flex items-center gap-2 mb-1"><Wallet size={18} /><span className="font-bold text-sm">Saldo</span></div>{payMethod === 'ACCOUNT' && <CheckCircle2 size={16} className="text-teal-500" />}</button><button type="button" onClick={() => setPayMethod('CARD')} className={`flex flex-col items-center justify-center p-3 rounded-xl border transition-all ${payMethod === 'CARD' ? 'bg-purple-50 border-purple-500 text-purple-700 dark:bg-purple-900/20 dark:text-purple-400' : 'bg-white border-gray-200 text-gray-500 dark:bg-slate-800 dark:border-slate-700'}`}><div className="flex items-center gap-2 mb-1"><CreditCard size={18} /><span className="font-bold text-sm">Outro Cartão</span></div>{payMethod === 'CARD' && <CheckCircle2 size={16} className="text-purple-500" />}</button></div>{payMethod === 'ACCOUNT' ? (<div className="relative"><select className="w-full p-3 rounded-xl bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-700 text-gray-800 dark:text-white outline-none focus:ring-2 focus:ring-teal-500 appearance-none" value={paymentAccount} onChange={e => setPaymentAccount(e.target.value)} required>{accounts.map(acc => (<option key={acc.id} value={acc.id}>{acc.name} (R$ {Number(acc.balance).toLocaleString('pt-BR', { minimumFractionDigits: 2 })})</option>))}</select><div className="absolute right-3 top-3.5 pointer-events-none text-gray-400"><ArrowDownCircle size={16} /></div></div>) : (<div className="relative"><select className="w-full p-3 rounded-xl bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-700 text-gray-800 dark:text-white outline-none focus:ring-2 focus:ring-purple-500 appearance-none" value={paymentCard} onChange={e => setPaymentCard(e.target.value)} required>{cards.filter(c => c.id !== invoiceToPay.cardId).map(c => (<option key={c.id} value={c.id}>{c.name} (Disp: R$ {Number(c.limit_available).toLocaleString('pt-BR', { minimumFractionDigits: 2 })})</option>))}{cards.filter(c => c.id !== invoiceToPay.cardId).length === 0 && (<option disabled>Sem outros cartões disponíveis</option>)}</select><div className="absolute right-3 top-3.5 pointer-events-none text-gray-400"><ArrowDownCircle size={16} /></div></div>)}</div><button type="submit" className="w-full bg-rose-600 text-white font-bold py-3 rounded-xl hover:bg-rose-500 active:scale-95 transition shadow-lg shadow-rose-500/20">Confirmar Pagamento</button></form>)}
       </Modal>
 
     </div>

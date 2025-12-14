@@ -7,6 +7,8 @@ import Shopping from './pages/Shopping'; // Certifique-se que está importado
 import History from './pages/History';
 import AcceptInvite from './pages/AcceptInvite';
 import Settings from './pages/Settings';
+import ForgotPassword from './pages/ForgotPassword';
+import ResetPassword from './pages/ResetPassword';
 import { AuthProvider, AuthContext } from './context/AuthContext';
 import { ThemeProvider } from './context/ThemeContext';
 import { useContext } from 'react';
@@ -45,6 +47,8 @@ function App() {
           <Toaster position="top-center" />
           <Routes>
             <Route path="/login" element={<Login />} />
+            <Route path="/forgot-password" element={<ForgotPassword />} />
+            <Route path="/reset-password/:uid/:token" element={<ResetPassword />} />
             
             {/* Rotas Protegidas */}
             <Route path="/app" element={<PrivateRoute><Dashboard /></PrivateRoute>} />

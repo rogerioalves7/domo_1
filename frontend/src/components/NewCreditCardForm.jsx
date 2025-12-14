@@ -1,64 +1,106 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import api from '../services/api';
 import toast from 'react-hot-toast';
 import MoneyInput from './MoneyInput';
-import Input from './Input';
-import { CreditCard, Calendar, ArrowLeft, Trash2 } from 'lucide-react';
+import { CreditCard, Save, Trash2, X, Users, Lock, Calendar } from 'lucide-react';
+import { useTheme } from '../context/ThemeContext';
 
 export default function NewCreditCardForm({ onSuccess, onBack, initialData = null }) {
-  const [name, setName] = useState('');
-  const [limitTotal, setLimitTotal] = useState('');
-  const [limitAvailable, setLimitAvailable] = useState(''); // <--- Novo Estado
-  const [closingDay, setClosingDay] = useState('');
-  const [dueDay, setDueDay] = useState('');
-  const [isShared, setIsShared] = useState(true);
+  const { theme } = useTheme();
+  
+  // --- INICIALIZAÇÃO DIRETA (Igual ao NewAccountForm) ---
+  // Recebe o valor bruto do banco (Float) ou 0. Não formatamos aqui.
+  const [name, setName] = useState(initialData?.name || '');
+  const [limit, setLimit] = useState(initialData?.limit_total || 0);
+  const [limitAvailable, setLimitAvailable] = useState(initialData?.limit_available || 0);
+  const [closingDay, setClosingDay] = useState(initialData?.closing_day || '');
+  const [dueDay, setDueDay] = useState(initialData?.due_day || '');
+  const [isShared, setIsShared] = useState(initialData?.is_shared || false);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    if (initialData) {
-      setName(initialData.name);
-      setLimitTotal(initialData.limit_total);
-      setLimitAvailable(initialData.limit_available); // <--- Carrega na edição
-      setClosingDay(initialData.closing_day);
-      setDueDay(initialData.due_day);
-      setIsShared(initialData.is_shared);
-    }
-  }, [initialData]);
-
-  // Efeito de conveniência: Ao digitar o Limite Total, se o Disponível estiver vazio, preenche igual.
-  useEffect(() => {
-    if (!initialData && limitTotal && !limitAvailable) {
-        setLimitAvailable(limitTotal);
-    }
-  }, [limitTotal]);
-
-  async function handleSubmit(e) {
-    e.preventDefault();
+  // --- EXCLUSÃO ---
+  async function executeDelete(toastId) {
+    toast.dismiss(toastId);
     setLoading(true);
+    const loadingToast = toast.loading("Excluindo cartão...");
 
     try {
-      const finalLimitTotal = typeof limitTotal === 'string' ? parseFloat(limitTotal.replace(',', '.')) : limitTotal;
-      const finalLimitAvailable = typeof limitAvailable === 'string' ? parseFloat(limitAvailable.replace(',', '.')) : limitAvailable;
+      await api.delete(`/credit-cards/${initialData.id}/`);
+      toast.success("Cartão excluído!", { id: loadingToast });
+      if (onSuccess) onSuccess();
+    } catch (error) {
+      console.error(error);
+      toast.error("Erro ao excluir. Verifique faturas.", { id: loadingToast });
+      setLoading(false);
+    }
+  }
+
+  function confirmDelete() {
+    toast((t) => (
+      <div className="flex flex-col gap-3 min-w-[260px] p-1">
+        <div className="flex items-start gap-3">
+            <div className="bg-rose-100 p-2 rounded-full text-rose-500"><Trash2 size={20} /></div>
+            <div>
+                <p className="font-bold text-gray-800 dark:text-gray-100 text-sm">Excluir Cartão?</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">O histórico de faturas será afetado.</p>
+            </div>
+        </div>
+        <div className="flex justify-end gap-2 pt-2 border-t border-gray-100 dark:border-slate-700 mt-1">
+          <button onClick={() => toast.dismiss(t.id)} className="px-3 py-1.5 text-xs font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-lg transition">Cancelar</button>
+          <button onClick={() => executeDelete(t.id)} className="px-3 py-1.5 text-xs font-bold text-white bg-rose-500 hover:bg-rose-600 rounded-lg shadow-sm transition">Sim, excluir</button>
+        </div>
+      </div>
+    ), { 
+        duration: Infinity, position: 'top-center',
+        style: { background: theme === 'dark' ? '#1E293B' : '#fff', color: theme === 'dark' ? '#fff' : '#333' }
+    });
+  }
+
+  // --- SALVAR (LÓGICA CORRIGIDA) ---
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (!name || !closingDay || !dueDay) return toast.error("Preencha os campos obrigatórios.");
+
+    if (closingDay < 1 || closingDay > 31 || dueDay < 1 || dueDay > 31) {
+        return toast.error("Dias devem ser entre 1 e 31.");
+    }
+
+    setLoading(true);
+    try {
+      // Função robusta: 
+      // 1. Se for número (ex: não editou o campo), mantém número.
+      // 2. Se for string (ex: editou), limpa formatação BR.
+      const parseCurrency = (val) => {
+          if (!val) return 0;
+          if (typeof val === 'number') return val;
+          return parseFloat(val.toString().replace(/\./g, '').replace(',', '.'));
+      };
+
+      // Se for criação e não preencher disponível, assume igual ao total
+      // Se for edição, respeita o valor (mesmo que seja 0)
+      const cleanLimit = parseCurrency(limit);
+      const cleanAvailable = (limitAvailable === '' || limitAvailable === null) 
+          ? cleanLimit 
+          : parseCurrency(limitAvailable);
 
       const payload = {
         name,
-        limit_total: finalLimitTotal || 0,
-        limit_available: finalLimitAvailable || 0, // <--- Envia para API
+        limit_total: cleanLimit,
+        limit_available: cleanAvailable,
         closing_day: parseInt(closingDay),
         due_day: parseInt(dueDay),
         is_shared: isShared
       };
 
       if (initialData) {
-        await api.put(`/credit-cards/${initialData.id}/`, payload);
+        await api.patch(`/credit-cards/${initialData.id}/`, payload);
         toast.success("Cartão atualizado!");
       } else {
         await api.post('/credit-cards/', payload);
         toast.success("Cartão criado!");
       }
-
-      onSuccess();
-
+      
+      if (onSuccess) onSuccess();
     } catch (error) {
       console.error(error);
       toast.error("Erro ao salvar cartão.");
@@ -67,125 +109,131 @@ export default function NewCreditCardForm({ onSuccess, onBack, initialData = nul
     }
   }
 
-  async function handleDelete() {
-    if (confirm("Deseja excluir este cartão?")) {
-        try {
-            setLoading(true);
-            await api.delete(`/credit-cards/${initialData.id}/`);
-            toast.success("Cartão excluído.");
-            onSuccess();
-        } catch (error) {
-            toast.error("Erro ao excluir.");
-        }
-    }
-  }
-
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
+    <form onSubmit={handleSubmit} className="space-y-5">
       
-      <div className="flex justify-between items-center mb-2">
-         {onBack && (
-            <button 
-                type="button" 
-                onClick={onBack}
-                className="flex items-center text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition"
-            >
-                <ArrowLeft size={16} className="mr-1" /> Voltar
-            </button>
-         )}
-         {initialData && (
-            <button type="button" onClick={handleDelete} className="text-red-500 p-1">
-                <Trash2 size={18} />
-            </button>
-         )}
-      </div>
-
-      <div>
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Apelido do Cartão</label>
-        <Input 
-          type="text" 
-          required
-          placeholder="Ex: Nubank Violeta..."
-          value={name}
-          onChange={e => setName(e.target.value)}
-          icon={CreditCard}
-        />
-      </div>
-
-      {/* Grid para os Limites */}
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Limite Total</label>
-            <MoneyInput 
-                value={limitTotal}
-                onValueChange={(val) => setLimitTotal(val)}
-                placeholder="0,00"
-            />
+      {/* Cabeçalho Visual */}
+      <div className="flex items-center gap-3 p-4 bg-purple-50 dark:bg-purple-900/20 rounded-xl border border-purple-100 dark:border-purple-900/30">
+        <div className="p-3 bg-purple-100 dark:bg-purple-800 rounded-full text-purple-600 dark:text-purple-300">
+            <CreditCard size={24} />
         </div>
         <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Limite Disponível</label>
-            <MoneyInput 
-                value={limitAvailable}
-                onValueChange={(val) => setLimitAvailable(val)}
-                placeholder="0,00"
-            />
+            <h3 className="font-bold text-purple-900 dark:text-purple-100">
+                {initialData ? 'Editar Cartão' : 'Novo Cartão'}
+            </h3>
+            <p className="text-xs text-purple-600 dark:text-purple-400">
+                Gerencie limites e datas de faturas.
+            </p>
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
+      {/* Campos */}
+      <div className="space-y-4">
         <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Dia Fechamento</label>
-            <Input 
-                type="number" 
-                min="1" max="31"
-                required
-                value={closingDay}
-                onChange={e => setClosingDay(e.target.value)}
-                icon={Calendar}
+            <label className="block text-xs font-bold text-gray-500 uppercase mb-1 ml-1">Nome do Cartão</label>
+            <input 
+                type="text" 
+                placeholder="Ex: Nubank, XP Black..." 
+                className="w-full p-3 rounded-xl bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 outline-none focus:ring-2 focus:ring-purple-500 transition-all font-medium dark:text-white"
+                value={name}
+                onChange={e => setName(e.target.value)}
+                autoFocus
             />
         </div>
-        <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Dia Vencimento</label>
-            <Input 
-                type="number" 
-                min="1" max="31"
-                required
-                value={dueDay}
-                onChange={e => setDueDay(e.target.value)}
-                icon={Calendar}
-            />
-        </div>
-      </div>
 
-      <div className="flex items-center justify-between p-3 bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-700">
-        <div className="flex flex-col">
-            <span className="font-medium text-gray-700 dark:text-gray-200">Compartilhar?</span>
-            <span className="text-xs text-gray-500 dark:text-gray-400">Visível para toda a casa</span>
+        {/* GRID LIMITES */}
+        <div className="grid grid-cols-2 gap-4">
+            <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1 ml-1">Limite Total</label>
+                <MoneyInput 
+                    value={limit} 
+                    onValueChange={setLimit} 
+                    placeholder="0,00"
+                />
+            </div>
+            <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1 ml-1">Limite Disponível</label>
+                <MoneyInput 
+                    value={limitAvailable} 
+                    onValueChange={setLimitAvailable} 
+                    placeholder={typeof limit === 'number' ? limit.toFixed(2) : limit || "0,00"} 
+                />
+            </div>
         </div>
-        
-        <button
-            type="button"
+
+        {/* GRID DATAS (Sem setas) */}
+        <div className="grid grid-cols-2 gap-4">
+            <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1 ml-1 flex items-center gap-1">
+                    <Calendar size={12}/> Dia Fechamento
+                </label>
+                <input 
+                    type="number" 
+                    min="1" max="31"
+                    placeholder="DD"
+                    className="w-full p-3 rounded-xl bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 outline-none focus:ring-2 focus:ring-purple-500 transition-all font-medium dark:text-white appearance-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                    value={closingDay}
+                    onChange={e => setClosingDay(e.target.value)}
+                />
+            </div>
+            <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1 ml-1 flex items-center gap-1">
+                    <Calendar size={12}/> Dia Vencimento
+                </label>
+                <input 
+                    type="number" 
+                    min="1" max="31"
+                    placeholder="DD"
+                    className="w-full p-3 rounded-xl bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 outline-none focus:ring-2 focus:ring-purple-500 transition-all font-medium dark:text-white appearance-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                    value={dueDay}
+                    onChange={e => setDueDay(e.target.value)}
+                />
+            </div>
+        </div>
+
+        {/* Toggle Compartilhado */}
+        <div 
             onClick={() => setIsShared(!isShared)}
-            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                isShared ? 'bg-teal-500' : 'bg-gray-300 dark:bg-slate-600'
-            }`}
+            className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-all
+            ${isShared 
+                ? 'bg-blue-50 border-blue-200 dark:bg-blue-900/20 dark:border-blue-800' 
+                : 'bg-gray-50 border-gray-200 dark:bg-slate-900 dark:border-slate-700'}`}
         >
-            <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                    isShared ? 'translate-x-6' : 'translate-x-1'
-                }`}
-            />
+            <div className="flex items-center gap-3">
+                <div className={`p-2 rounded-full ${isShared ? 'bg-blue-100 text-blue-600' : 'bg-gray-200 text-gray-500 dark:bg-slate-800'}`}>
+                    {isShared ? <Users size={18}/> : <Lock size={18}/>}
+                </div>
+                <div>
+                    <p className={`text-sm font-bold ${isShared ? 'text-blue-700 dark:text-blue-300' : 'text-gray-600 dark:text-gray-400'}`}>
+                        {isShared ? 'Cartão Familiar' : 'Cartão Privado'}
+                    </p>
+                    <p className="text-[10px] text-gray-500">
+                        {isShared ? 'Fatura visível para todos' : 'Fatura visível apenas para você'}
+                    </p>
+                </div>
+            </div>
+            <div className={`w-10 h-6 rounded-full p-1 transition-colors ${isShared ? 'bg-blue-500' : 'bg-gray-300 dark:bg-slate-600'}`}>
+                <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${isShared ? 'translate-x-4' : ''}`} />
+            </div>
+        </div>
+      </div>
+
+      {/* Botões */}
+      <div className="flex gap-3 pt-2">
+        {onBack && (
+            <button type="button" onClick={onBack} className="p-3 rounded-xl bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-slate-700 transition">
+                <X size={20} />
+            </button>
+        )}
+        {initialData && (
+            <button type="button" onClick={confirmDelete} className="p-3 rounded-xl bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 hover:bg-rose-200 dark:hover:bg-rose-900/50 transition" title="Excluir Cartão">
+                <Trash2 size={20} />
+            </button>
+        )}
+        <button type="submit" disabled={loading} className="flex-1 flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-500 text-white font-bold py-3 rounded-xl shadow-lg shadow-purple-200 dark:shadow-none transition-all active:scale-95 disabled:opacity-70">
+            {loading ? 'Salvando...' : <><Save size={20} /> Salvar Cartão</>}
         </button>
       </div>
-
-      <button 
-        type="submit" 
-        disabled={loading}
-        className="w-full bg-teal-600 text-white font-bold py-3 rounded-xl hover:bg-teal-500 active:scale-95 transition disabled:opacity-50"
-      >
-        {loading ? 'Salvando...' : (initialData ? 'Atualizar Cartão' : 'Salvar Cartão')}
-      </button>
-
     </form>
   );
 }

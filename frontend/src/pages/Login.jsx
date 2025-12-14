@@ -1,5 +1,5 @@
 import { useState, useContext, useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams, Link } from 'react-router-dom'; // <--- ADICIONADO: Link
 import { AuthContext } from '../context/AuthContext';
 import Input from '../components/Input';
 import logoImg from '../assets/logo.png'; 
@@ -17,18 +17,14 @@ export default function Login() {
     const { signIn, signUp } = useContext(AuthContext);
     const navigate = useNavigate();
     
-    // Leitura do Token de Convite da URL (Apenas para UX)
+    // Leitura do Token de Convite da URL
     const [searchParams] = useSearchParams();
     const inviteToken = searchParams.get('invite');
 
     // --- EFEITO: CONFIGURA AMBIENTE SE HOUVER CONVITE ---
     useEffect(() => {
         if (inviteToken) {
-            // 1. Força a visualização do Cadastro
             setIsLogin(false); 
-            
-            // 2. Segurança: Garante que o token esteja salvo para o AuthContext usar DEPOIS do login
-            // (Caso o usuário tenha vindo direto pela URL e não pelo AcceptInvite)
             if (inviteToken !== 'true') {
                 localStorage.setItem('pending_invite_token', inviteToken);
             }
@@ -44,21 +40,15 @@ export default function Login() {
         setLoading(true);
 
         try {
-            // NOTA: Não enviamos mais o token aqui. 
-            // O AuthContext verifica o localStorage automaticamente após o sucesso.
-            
             if (isLogin) {
-                // FLUXO DE LOGIN
                 await signIn({ username, password });
             } else {
-                // FLUXO DE CADASTRO PADRÃO
                 await signUp({ 
                     username, 
                     email, 
                     password
                 });
             }
-            
             navigate('/app');
         } catch (error) {
             // Erro já tratado no Contexto (Toast)
@@ -69,7 +59,6 @@ export default function Login() {
 
     const toggleView = () => {
         setIsLogin(!isLogin);
-        // Limpa a senha e o email ao trocar de tela
         setPassword('');
         setEmail('');
     }
@@ -147,7 +136,6 @@ export default function Login() {
                                 />
                             </div>
 
-                            {/* CAMPO DE E-MAIL (SÓ NO CADASTRO) */}
                             {!isLogin && (
                                 <div className="animate-fade-in-down">
                                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5 ml-1">E-mail</label>
@@ -165,9 +153,18 @@ export default function Login() {
                             <div>
                                 <div className="flex justify-between items-center mb-1.5 ml-1">
                                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Senha</label>
+                                    
+                                    {/* --- CORREÇÃO AQUI: Link para Esqueci Senha --- */}
                                     {isLogin && (
-                                        <a href="#" className="text-xs font-semibold text-teal-600 hover:text-teal-500 dark:text-teal-400">Esqueceu?</a>
+                                        <Link 
+                                            to="/forgot-password" 
+                                            className="text-xs font-semibold text-teal-600 hover:text-teal-500 dark:text-teal-400 hover:underline"
+                                        >
+                                            Esqueceu?
+                                        </Link>
                                     )}
+                                    {/* ----------------------------------------------- */}
+
                                 </div>
                                 <Input
                                     type="password"
@@ -198,7 +195,6 @@ export default function Login() {
                     </form>
 
                     <div className="mt-8 text-center pb-8 md:pb-0">
-                        {/* O botão de toggle só aparece se não estiver em modo convite, ou se o usuário quiser explicitamente trocar */}
                         <p className="text-sm text-gray-500 dark:text-gray-400">
                             {isLogin ? 'Ainda não possui uma conta?' : 'Já tem uma conta?'}
                             {' '}
