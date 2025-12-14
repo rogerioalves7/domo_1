@@ -60,13 +60,79 @@ class HouseViewSet(viewsets.ModelViewSet):
     queryset = House.objects.all()
     serializer_class = HouseSerializer
     permission_classes = [permissions.IsAuthenticated]
-    
-    def get_queryset(self):
-        user = self.request.user
-        if hasattr(user, 'house_member'):
-            return House.objects.filter(id=user.house_member.house.id)
-        return House.objects.none()
 
+    def get_queryset(self):
+        if self.request.user.is_anonymous:
+            return House.objects.none()
+        return House.objects.filter(members__user=self.request.user)
+
+    def perform_create(self, serializer):
+        # 1. Salva a casa
+        house = serializer.save()
+        
+        # 2. Garante que o criador seja MASTER
+        # O método update_or_create cobre dois cenários:
+        # A) O serializer/signal já criou o membro como 'MEMBER'? -> Ele atualiza para 'MASTER'.
+        # B) Ninguém criou o membro ainda? -> Ele cria agora como 'MASTER'.
+        
+        HouseMember.objects.update_or_create(
+            user=self.request.user,
+            house=house,
+            defaults={'role': 'MASTER'}
+        )
+
+    # --- LÓGICA DE EXCLUSÃO TOTAL (CASA + USUÁRIO) ---
+    def destroy(self, request, *args, **kwargs):
+        house = self.get_object()
+        user = request.user
+        
+        # 1. Verificação de Segurança
+        try:
+            member = HouseMember.objects.get(user=user, house=house)
+            if member.role != 'MASTER':
+                return Response({'error': 'Apenas o Master pode excluir a casa permanentemente.'}, status=status.HTTP_403_FORBIDDEN)
+        except HouseMember.DoesNotExist:
+            return Response({'error': 'Membro não encontrado.'}, status=status.HTTP_403_FORBIDDEN)
+
+        # 2. Apagar a Casa
+        # O Django vai apagar em cascata: Membros, Transações vinculadas à casa, Contas, etc.
+        house.delete()
+
+        # 3. Apagar o Usuário (O Master)
+        # Como solicitado, apagamos também o registro de login do usuário.
+        user.delete()
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    # --- LÓGICA DE SAÍDA (MANTIDA IGUAL) ---
+    @action(detail=True, methods=['post'])
+    def leave(self, request, pk=None):
+        house = self.get_object()
+        user = request.user
+        
+        try:
+            member = HouseMember.objects.get(user=user, house=house)
+        except HouseMember.DoesNotExist:
+            return Response({'error': 'Você não é membro desta casa.'}, status=400)
+
+        if member.role == 'MASTER':
+            return Response({'error': 'O Master não pode sair. Você deve excluir a casa.'}, status=400)
+
+        # Preservar transações (Anônimas)
+        user_accounts = Account.objects.filter(owner=user, house=house)
+        user_cards = CreditCard.objects.filter(owner=user, house=house)
+        Transaction.objects.filter(account__in=user_accounts).update(account=None)
+        
+        user_invoices = Invoice.objects.filter(card__in=user_cards)
+        Transaction.objects.filter(invoice__in=user_invoices).update(invoice=None)
+
+        user_accounts.delete()
+        user_cards.delete()
+        member.delete()
+
+        return Response({'status': 'Você saiu da casa com sucesso.'})
+
+# --- 2. HOUSE MEMBER VIEW SET (Atualizada para usar MASTER) ---
 class HouseMemberViewSet(BaseHouseViewSet):
     queryset = HouseMember.objects.all()
     serializer_class = HouseMemberSerializer
@@ -79,11 +145,12 @@ class HouseMemberViewSet(BaseHouseViewSet):
         if not hasattr(requester, 'house_member'):
             return Response({'error': 'Você não é membro desta casa.'}, status=status.HTTP_403_FORBIDDEN)
             
-        # 3. VERIFICAÇÃO DE SEGURANÇA: O solicitante é ADMIN?
-        if requester.house_member.role != 'ADMIN':
-            return Response({'error': 'Apenas administradores podem remover membros.'}, status=status.HTTP_403_FORBIDDEN)
+        # 3. VERIFICAÇÃO DE SEGURANÇA: O solicitante é MASTER?
+        # (Alterado de 'ADMIN' para 'MASTER' conforme nossa regra)
+        if requester.house_member.role != 'MASTER':
+            return Response({'error': 'Apenas o Master pode remover membros.'}, status=status.HTTP_403_FORBIDDEN)
 
-        # 4. Impede que o usuário delete a si mesmo por esta rota (opcional, mas bom para UX)
+        # 4. Impede que o usuário delete a si mesmo
         instance = self.get_object()
         if instance.user == requester:
              return Response({'error': 'Você não pode se remover/banir. Use a opção "Sair da Casa".'}, status=status.HTTP_400_BAD_REQUEST)

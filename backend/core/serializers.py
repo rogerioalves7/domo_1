@@ -111,15 +111,18 @@ class TransactionSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source='category.name', read_only=True)
     account_name = serializers.CharField(source='account.name', read_only=True)
     
-    # ESTA LINHA É OBRIGATÓRIA PARA A LISTA APARECER
-    items = TransactionItemSerializer(many=True, read_only=True)
-    
+    # Campo calculado para identificar o cartão (usado no filtro do histórico)
+    card_id = serializers.IntegerField(source='invoice.card.id', read_only=True, allow_null=True)
+
     class Meta:
         model = Transaction
         fields = [
             'id', 'description', 'value', 'type', 'date', 
-            'category', 'category_name', 'account', 'account_name', 
-            'invoice', 'items' # <--- CONFIRA SE 'items' ESTÁ NA LISTA DE CAMPOS
+            'category', 'category_name', 
+            'account', 'account_name', 
+            'card_id', 
+            'invoice', 'items', 'recurring_bill' 
+            # REMOVIDO: 'installments'
         ]
 
 # --- ESTOQUE E COMPRAS ---

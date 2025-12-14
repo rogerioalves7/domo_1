@@ -2,6 +2,8 @@ from django.db import models
 from django.contrib.auth.models import User
 from django.utils import timezone
 from datetime import date
+from django.db.models.signals import post_save
+from django.dispatch import receiver
 import uuid
 
 # --- GESTÃO DA CASA (MULTI-TENANCY) ---
@@ -192,3 +194,19 @@ class HouseInvitation(models.Model):
 
     def __str__(self):
         return f"Convite para {self.email} ({self.house.name})"
+    
+@receiver(post_save, sender=HouseMember)
+def enforce_master_role_for_creator(sender, instance, created, **kwargs):
+    """
+    Garante que o PRIMEIRO membro de qualquer casa seja sempre MASTER.
+    Funciona tanto para cadastro quanto para criação manual.
+    """
+    if created:
+        # Conta quantos membros essa casa tem
+        members_count = HouseMember.objects.filter(house=instance.house).count()
+        
+        # Se só tem 1 (que é este que acabou de ser criado), ele TEM que ser Master
+        if members_count == 1:
+            # Precisamos usar update() para evitar recursão infinita do signal
+            HouseMember.objects.filter(id=instance.id).update(role='MASTER')
+            print(f"👑 Usuário {instance.user.username} definido como MASTER da casa {instance.house.name} (Primeiro Membro).")

@@ -153,3 +153,4 @@ AUTHENTICATION_BACKENDS = [
     'core.backends.EmailOrUsernameModelBackend', # <-- NOVO BACKEND
     'django.contrib.auth.backends.ModelBackend',
 ]
+

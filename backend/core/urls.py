@@ -26,6 +26,7 @@ router.register(r'products', ProductViewSet)
 router.register(r'inventory', InventoryViewSet)
 router.register(r'shopping-list', ShoppingListViewSet)
 router.register(r'history', HistoryViewSet, basename='history')
+router.register(r'auth', AuthViewSet, basename='auth'
 
 # --- ROTA DE CONVITES ---
 # O basename é crucial quando a ViewSet não tem queryset definido
