@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from django.utils import timezone
+import datetime
 from .models import (
     House, HouseMember, Account, CreditCard, Invoice, 
     Transaction, Product, InventoryItem, ShoppingList, 
@@ -120,12 +121,14 @@ class TransactionItemSerializer(serializers.ModelSerializer):
         fields = ['id', 'description', 'value', 'quantity']
 
 class TransactionSerializer(serializers.ModelSerializer):
-    # Campos existentes...
     category_name = serializers.CharField(source='category.name', read_only=True)
     
-    # NOVOS CAMPOS PARA O CARD:
+    # Campos calculados
     owner_name = serializers.SerializerMethodField()
     source_name = serializers.SerializerMethodField()
+
+    # Campo de escrita auxiliar (não vai pro banco Transaction)
+    card = serializers.IntegerField(write_only=True, required=False, allow_null=True)
 
     class Meta:
         model = Transaction
@@ -133,26 +136,101 @@ class TransactionSerializer(serializers.ModelSerializer):
             'id', 'description', 'value', 'type', 'date', 
             'category', 'category_name', 
             'is_shared',
-            'owner_name', # <--- Adicione
-            'source_name' # <--- Adicione
-            # ... mantenha os outros campos (account, invoice, etc)
+            'owner_name', 
+            'source_name',
+            'account', 'invoice', 
+            'card', 
+            'items', 'recurring_bill'
         ]
+        read_only_fields = ['is_shared']
 
     def get_owner_name(self, obj):
-        # Retorna o Primeiro Nome de quem fez a transação
-        if obj.account:
+        # Cenário 1: Conta Bancária
+        if obj.account: 
             return obj.account.owner.first_name
-        if obj.invoice and obj.invoice.card:
-            return obj.invoice.card.user.first_name # Ajuste 'user' para 'owner' se for o caso no seu model Card
+            
+        # Cenário 2: Cartão de Crédito (Via Fatura)
+        if obj.invoice and obj.invoice.card: 
+            # CORREÇÃO AQUI: Trocamos .user por .owner
+            # Se o seu modelo de cartão usar outro nome, ajuste aqui.
+            return obj.invoice.card.owner.first_name 
+            
         return "Desconhecido"
 
     def get_source_name(self, obj):
-        # Retorna o nome da Conta ou do Cartão
-        if obj.account:
+        if obj.account: 
             return obj.account.name
-        if obj.invoice and obj.invoice.card:
+        if obj.invoice and obj.invoice.card: 
             return f"Cartão {obj.invoice.card.name}"
         return "Outros"
+
+    # --- LÓGICA DE ROTEAMENTO DE FATURA ---
+    def _get_correct_invoice(self, card, transaction_date):
+        day = transaction_date.day
+        month = transaction_date.month
+        year = transaction_date.year
+
+        if day >= card.closing_day:
+            if month == 12:
+                ref_month = 1
+                ref_year = year + 1
+            else:
+                ref_month = month + 1
+                ref_year = year
+        else:
+            ref_month = month
+            ref_year = year
+
+        invoice, created = Invoice.objects.get_or_create(
+            card=card,
+            reference_month=ref_month,
+            reference_year=ref_year,
+            defaults={
+                'status': 'OPEN' if (datetime.date.today().month == ref_month) else 'CLOSED',
+                'value': 0
+            }
+        )
+        return invoice
+
+    def create(self, validated_data):
+        card_id = validated_data.pop('card', None)
+        account = validated_data.get('account')
+        initial_invoice = validated_data.get('invoice')
+        
+        card = None
+        
+        if card_id:
+            try:
+                card = CreditCard.objects.get(id=card_id)
+            except CreditCard.DoesNotExist:
+                pass
+        elif initial_invoice:
+            card = initial_invoice.card
+
+        # 1. LÓGICA DE CARTÃO
+        if card and not account:
+            transaction_date = validated_data.get('date')
+            correct_invoice = self._get_correct_invoice(card, transaction_date)
+            
+            validated_data['invoice'] = correct_invoice
+            correct_invoice.value += validated_data['value']
+            correct_invoice.save()
+            
+            validated_data['is_shared'] = card.is_shared
+
+        # 2. LÓGICA DE CONTA
+        elif account:
+            if validated_data['type'] == 'EXPENSE':
+                account.balance -= validated_data['value']
+            else:
+                account.balance += validated_data['value']
+            account.save()
+            validated_data['is_shared'] = account.is_shared
+
+        else:
+            validated_data['is_shared'] = False
+            
+        return super().create(validated_data)
 
 # --- ESTOQUE E COMPRAS ---
 
