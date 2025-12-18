@@ -1,20 +1,22 @@
+import os
 from pathlib import Path
 from decouple import config
+import dj_database_url
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
-
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = config('SECRET_KEY')
+SECRET_KEY = config('SECRET_KEY', default='django-insecure-chave-padrao-dev')
 
 # SECURITY WARNING: don't run with debug turned on in production!
+# No Render, definiremos DEBUG como False nas variáveis de ambiente
 DEBUG = config('DEBUG', default=False, cast=bool)
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['*'] # Permite que o Render acesse a aplicação
 
 
 # Application definition
@@ -27,16 +29,19 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
 
-    # Adicione estas linhas:
-    'corsheaders',      # Para permitir conexão com React
-    'rest_framework',   # Para criar a API
+    # Third party apps
+    'corsheaders',      
+    'rest_framework',   
     'rest_framework.authtoken',
-    'core',             # <--- NOSSO APP COM AS TABELAS
+    
+    # Local apps
+    'core',             
 ]
 
 MIDDLEWARE = [
-    'corsheaders.middleware.CorsMiddleware', # <--- TEM QUE SER O PRIMEIRO (ou um dos primeiros)
+    'corsheaders.middleware.CorsMiddleware', # Deve ser o primeiro para lidar com Headers antes de tudo
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware', # <--- NOVO: Logo após Security
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -68,16 +73,26 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': config('DB_NAME'),
-        'USER': config('DB_USER'),
-        'PASSWORD': config('DB_PASSWORD'),
-        'HOST': config('DB_HOST'),
-        'PORT': config('DB_PORT'),
+# LÓGICA HÍBRIDA: Produção (Render) vs Local (Supabase via .env)
+DATABASE_URL = os.environ.get('DATABASE_URL') # O Render injeta isso automaticamente
+
+if DATABASE_URL:
+    # Configuração de Produção
+    DATABASES = {
+        'default': dj_database_url.parse(DATABASE_URL, conn_max_age=600)
     }
-}
+else:
+    # Configuração Local (Lê do .env)
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': config('DB_NAME', default='postgres'),
+            'USER': config('DB_USER', default='postgres'),
+            'PASSWORD': config('DB_PASSWORD', default='postgres'),
+            'HOST': config('DB_HOST', default='localhost'),
+            'PORT': config('DB_PORT', default='5432'),
+        }
+    }
 
 
 # Password validation
@@ -102,9 +117,9 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # https://docs.djangoproject.com/en/6.0/topics/i18n/
 
-LANGUAGE_CODE = 'en-us'
+LANGUAGE_CODE = 'pt-br' # Ajustei para Português
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'America/Sao_Paulo' # Ajustei fuso horário
 
 USE_I18N = True
 
@@ -116,21 +131,30 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
-# --- CONFIGURAÇÃO CORS CORRETA ---
+# --- CONFIGURAÇÃO WHITENOISE (CRUCIAL PARA RENDER) ---
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
-# 1. Proibir o wildcard (Isso resolve o seu erro atual)
-CORS_ALLOW_ALL_ORIGINS = False 
 
-# 2. Permitir Credenciais (Necessário porque o React envia cookies/auth headers)
+# --- CONFIGURAÇÃO CORS ---
+
+# Permite credenciais (cookies/auth headers)
 CORS_ALLOW_CREDENTIALS = True
 
-# 3. Lista Branca Explicita (Atenção: SEM a barra '/' no final)
+# Defina a URL do seu frontend na Vercel aqui depois do deploy
+# Exemplo: "https://domo-frontend.vercel.app"
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    # Adicione a URL da Vercel aqui depois que ela for gerada
+    # "https://seu-projeto-domo.vercel.app", 
 ]
 
-# 4. Métodos permitidos (opcional, mas bom garantir)
+# DICA PARA O PRIMEIRO DEPLOY:
+# Descomente a linha abaixo se tiver problemas de CORS no início, 
+# mas lembre-se de comentar novamente e usar a lista acima para segurança depois.
+CORS_ALLOW_ALL_ORIGINS = True 
+
 CORS_ALLOW_METHODS = [
     "DELETE",
     "GET",
@@ -150,20 +174,12 @@ REST_FRAMEWORK = {
 }
 
 AUTHENTICATION_BACKENDS = [
-    'core.backends.EmailOrUsernameModelBackend', # <-- NOVO BACKEND
+    'core.backends.EmailOrUsernameModelBackend',
     'django.contrib.auth.backends.ModelBackend',
 ]
 
-# No final do arquivo:
+# Default primary key field type
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# --- CONFIGURAÇÃO DE E-MAIL (DEV) ---
-# Isso imprime o e-mail no terminal onde o servidor está rodando.
+# --- E-MAIL ---
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
-
-# --- CONFIGURAÇÃO DE E-MAIL (PRODUÇÃO - Exemplo Gmail) ---
-# EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-# EMAIL_HOST = 'smtp.gmail.com'
-# EMAIL_PORT = 587
-# EMAIL_USE_TLS = True
-# EMAIL_HOST_USER = 'seuemail@gmail.com'
-# EMAIL_HOST_PASSWORD = 'sua_senha_de_app' # Senha de App do Google, não a senha normal
