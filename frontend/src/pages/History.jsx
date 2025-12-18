@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo } from 'react';
 import api from '../services/api';
 import Sidebar from '../components/Sidebar';
 import MobileMenu from '../components/MobileMenu';
-import FinancialCharts from '../components/Charts/FinancialCharts'; 
+import FinancialCharts from '../components/charts/FinancialCharts'; 
 import { 
   History as HistoryIcon, Calendar, ArrowUpRight, ArrowDownLeft, 
   Search, ShoppingBag, Filter, X, Wallet, CreditCard
